@@ -532,3 +532,51 @@ def webhook():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+import os
+from flask import Flask, request, jsonify, render_template_string
+from binance.client import Client
+from datetime import datetime
+import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+
+app = Flask(__name__)
+
+# ... باقي الكود (routes, functions, etc.)
+
+# =============================================
+# أخبار Investing.com (تمت الإضافة في النهاية)
+# =============================================
+import feedparser
+
+def get_investing_news():
+    try:
+        url = 'https://www.investing.com/rss/news_14.rss'
+        feed = feedparser.parse(url)
+        news_list = []
+        for entry in feed.entries[:10]:
+            news_list.append({
+                'title': entry.title,
+                'summary': entry.summary[:200] if hasattr(entry, 'summary') else '',
+                'date': entry.get('published', ''),
+                'link': entry.get('link', '')
+            })
+        return news_list
+    except:
+        return []
+
+def has_important_news():
+    news = get_investing_news()
+    keywords = ['fed', 'interest', 'cpi', 'nonfarm', 'gdp', 'rate']
+    for item in news:
+        title = item['title'].lower()
+        for word in keywords:
+            if word in title:
+                return True, item['title']
+    return False, None
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
