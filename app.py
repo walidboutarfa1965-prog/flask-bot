@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import requests
 import feedparser
 from investiny import historical_data, search_assets
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
@@ -36,19 +37,46 @@ if BROKER_TYPE == 'binance':
         logging.error("❌ Failed to connect to Binance")
 
 # =============================================
-# 2. Investing.com Connection Check
+# 2. Investing.com Functions (Using investiny)
 # =============================================
-def check_investing_connection():
-    """Check if Investing.com RSS feed is accessible"""
+
+def get_investing_id(symbol, asset_type="Currency"):
+    """Get the Investing.com ID for a symbol"""
     try:
-        url = 'https://www.investing.com/rss/news_14.rss'
-        response = requests.get(url, timeout=5)
-        return response.status_code == 200
+        results = search_assets(query=symbol, limit=1, type=asset_type)
+        if results:
+            return int(results[0]["ticker"])
+        return None
+    except Exception as e:
+        logging.error(f"❌ Error getting Investing ID: {e}")
+        return None
+
+def get_investing_data(symbol, from_date="01/01/2024", to_date="01/06/2024"):
+    """Get historical data from Investing.com"""
+    try:
+        investing_id = get_investing_id(symbol)
+        if not investing_id:
+            return None
+        data = historical_data(
+            investing_id=investing_id,
+            from_date=from_date,
+            to_date=to_date
+        )
+        return data
+    except Exception as e:
+        logging.error(f"❌ Error fetching data from Investing.com: {e}")
+        return None
+
+def check_investing_connection():
+    """Check if Investing.com API is accessible"""
+    try:
+        results = search_assets(query="EUR/USD", limit=1, type="Currency")
+        return len(results) > 0
     except:
         return False
 
-def fetch_news():
-    """Fetch news from Investing.com"""
+def fetch_news_investiny():
+    """Fetch news using RSS (Investing.com)"""
     try:
         url = 'https://www.investing.com/rss/news_14.rss'
         feed = feedparser.parse(url)
@@ -64,13 +92,27 @@ def fetch_news():
                 'impact': 'high' if impact_score >= 2 else 'medium' if impact_score >= 1 else 'low'
             })
         return news
-    except:
+    except Exception as e:
+        logging.error(f"❌ Error fetching news: {e}")
         return []
 
 def get_news_risk():
-    news = fetch_news()
+    """Calculate news risk score (0-10)"""
+    news = fetch_news_investiny()
     risk = sum(2 for item in news if item['impact'] == 'high')
     return min(risk, 10)
+
+def get_investing_price(symbol):
+    """Get current price from Investing.com"""
+    try:
+        data = get_investing_data(symbol, 
+                                  from_date=(datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y"),
+                                  to_date=datetime.now().strftime("%d/%m/%Y"))
+        if data is not None and len(data) > 0:
+            return float(data['close'].iloc[-1])
+        return None
+    except:
+        return None
 
 # =============================================
 # 3. Bot Data
@@ -402,10 +444,6 @@ HTML_TEMPLATE = """
         .connection-item .dot { width:12px; height:12px; border-radius:50%; }
         .connection-item .dot.online { background:#00e676; }
         .connection-item .dot.offline { background:#ff5252; }
-        .investing-status { display:flex; align-items:center; gap:8px; padding:4px 12px; border-radius:20px; }
-        .investing-status .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
-        .investing-status .dot.online { background:#00e676; }
-        .investing-status .dot.offline { background:#ff5252; }
     </style>
 </head>
 <body>
@@ -588,7 +626,7 @@ def index():
     
     # Check Investing.com connection
     investing_connected = check_investing_connection()
-    news = fetch_news() if investing_connected else []
+    news = fetch_news_investiny() if investing_connected else []
     news_risk = get_news_risk() if investing_connected else 0
     
     return render_template_string(
@@ -644,17 +682,4 @@ def webhook():
         if analysis['signal'] != action:
             return jsonify({'status': 'blocked', 'reason': f'Signal mismatch: {analysis["signal"]} != {action}'}), 200
         trade = execute_trade(symbol, action, analysis['entry_price'], analysis['stop_loss'], analysis['take_profit'])
-        return jsonify({'status': 'success', 'trade': trade})
-    except Exception as e:
-        logging.error(f"❌ Error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 400
-
-# =============================================
-# 9. Run Server
-# =============================================
-
-if __name__ == '__main__':
-    thread = threading.Thread(target=trading_loop, daemon=True)
-    thread.start()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+        return jsonify
