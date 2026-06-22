@@ -4,3 +4,5 @@ python-binance
 python-dotenv
 requests
 feedparser
+pandas
+numpy
