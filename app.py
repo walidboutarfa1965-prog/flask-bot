@@ -682,4 +682,17 @@ def webhook():
         if analysis['signal'] != action:
             return jsonify({'status': 'blocked', 'reason': f'Signal mismatch: {analysis["signal"]} != {action}'}), 200
         trade = execute_trade(symbol, action, analysis['entry_price'], analysis['stop_loss'], analysis['take_profit'])
-        return jsonify
+        return jsonify({'status': 'success', 'trade': trade})
+    except Exception as e:
+        logging.error(f"❌ Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+# =============================================
+# 9. Run Server
+# =============================================
+
+if __name__ == '__main__':
+    thread = threading.Thread(target=trading_loop, daemon=True)
+    thread.start()
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
