@@ -1,6 +1,9 @@
-# mt5_connection.py
-import MetaTrader5 as mt5
-import logging
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    import mt5linux as mt5
+    print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
+    import logging
 
 logging.basicConfig(level=logging.INFO)
 
