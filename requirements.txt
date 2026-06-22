@@ -6,4 +6,4 @@ requests
 feedparser
 pandas
 numpy
-MetaTrader5
+mt5linux
