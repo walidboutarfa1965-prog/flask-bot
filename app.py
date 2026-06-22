@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify, render_template_string
 from dotenv import load_dotenv
 import requests
 import feedparser
-
+from investiny import historical_data, search_assets
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
