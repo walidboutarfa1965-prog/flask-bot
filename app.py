@@ -17,12 +17,12 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 # =============================================
-# 1. إعدادات البوت
+# 1. Bot Settings (Modified for Exness)
 # =============================================
-BROKER_TYPE = os.getenv('BROKER_TYPE', 'binance')
-MT5_LOGIN = os.getenv('MT5_LOGIN', '')
-MT5_PASSWORD = os.getenv('MT5_PASSWORD', '')
-MT5_SERVER = os.getenv('MT5_SERVER', 'Exness-MT5Trial')
+BROKER_TYPE = 'exness'
+MT5_LOGIN = 262946340
+MT5_PASSWORD = 'Mama1965.'
+MT5_SERVER = 'Exness-MT5Trial16'
 BINANCE_API_KEY = os.getenv('BINANCE_API_KEY', '')
 BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET', '')
 
@@ -33,10 +33,47 @@ if BROKER_TYPE == 'binance':
         client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, testnet=True)
         logging.info("✅ Binance Testnet")
     except:
-        logging.error("❌ فشل الاتصال بـ Binance")
+        logging.error("❌ Failed to connect to Binance")
 
 # =============================================
-# 2. بيانات البوت
+# 2. Investing.com Connection Check
+# =============================================
+def check_investing_connection():
+    """Check if Investing.com RSS feed is accessible"""
+    try:
+        url = 'https://www.investing.com/rss/news_14.rss'
+        response = requests.get(url, timeout=5)
+        return response.status_code == 200
+    except:
+        return False
+
+def fetch_news():
+    """Fetch news from Investing.com"""
+    try:
+        url = 'https://www.investing.com/rss/news_14.rss'
+        feed = feedparser.parse(url)
+        news = []
+        keywords = ['fed', 'interest', 'cpi', 'nonfarm', 'gdp', 'pmi', 'rate']
+        for entry in feed.entries[:10]:
+            title = entry.title.lower()
+            impact_score = sum(1 for kw in keywords if kw in title)
+            news.append({
+                'title': entry.title,
+                'summary': entry.summary[:200] if hasattr(entry, 'summary') else '',
+                'date': entry.get('published', ''),
+                'impact': 'high' if impact_score >= 2 else 'medium' if impact_score >= 1 else 'low'
+            })
+        return news
+    except:
+        return []
+
+def get_news_risk():
+    news = fetch_news()
+    risk = sum(2 for item in news if item['impact'] == 'high')
+    return min(risk, 10)
+
+# =============================================
+# 3. Bot Data
 # =============================================
 trades = []
 active_positions = []
@@ -64,12 +101,12 @@ bot_settings = {
         'structure': '1h',
         'entry': '15m'
     },
-    'confirmation_candles': 2,  # عدد الشموع لتأكيد الاتجاه
-    'min_trend_strength': 0.6,  # قوة الاتجاه المطلوبة
+    'confirmation_candles': 2,
+    'min_trend_strength': 0.6,
 }
 
 # =============================================
-# 3. نظام إدارة الصفقات
+# 4. Trade Manager
 # =============================================
 
 class TradeManager:
@@ -80,11 +117,10 @@ class TradeManager:
         self.trailing_stops = {}
     
     def place_pending_order(self, symbol, order_type, price, stop_loss, take_profit, quantity):
-        """وضع أمر معلق (Pending Order)"""
         order = {
             'id': len(self.pending_orders) + 1,
             'symbol': symbol,
-            'type': order_type,  # 'BUY_LIMIT', 'SELL_LIMIT', 'BUY_STOP', 'SELL_STOP'
+            'type': order_type,
             'price': price,
             'stop_loss': stop_loss,
             'take_profit': take_profit,
@@ -97,53 +133,44 @@ class TradeManager:
         return order
     
     def check_pending_orders(self, current_price):
-        """فحص الأوامر المعلقة وتفعيلها"""
         triggered = []
         for order in self.pending_orders:
             if order['status'] != 'PENDING':
                 continue
-            
             should_trigger = False
             if order['type'] in ['BUY_LIMIT', 'BUY_STOP']:
                 if order['type'] == 'BUY_LIMIT' and current_price <= order['price']:
                     should_trigger = True
                 elif order['type'] == 'BUY_STOP' and current_price >= order['price']:
                     should_trigger = True
-            else:  # SELL orders
+            else:
                 if order['type'] == 'SELL_LIMIT' and current_price >= order['price']:
                     should_trigger = True
                 elif order['type'] == 'SELL_STOP' and current_price <= order['price']:
                     should_trigger = True
-            
             if should_trigger:
                 order['status'] = 'TRIGGERED'
                 order['triggered_at'] = datetime.now().isoformat()
                 triggered.append(order)
-        
         return triggered
     
     def update_trailing_stop(self, position, current_price):
-        """تحديث وقف الخسارة المتحرك"""
         if position['id'] not in self.trailing_stops:
             self.trailing_stops[position['id']] = position['stop_loss']
-        
         current_stop = self.trailing_stops[position['id']]
-        
         if position['type'] == 'BUY':
             new_stop = current_price * (1 - bot_settings['trailing_stop_percent'] / 100)
             if new_stop > current_stop:
                 self.trailing_stops[position['id']] = new_stop
                 return new_stop
-        else:  # SELL
+        else:
             new_stop = current_price * (1 + bot_settings['trailing_stop_percent'] / 100)
             if new_stop < current_stop:
                 self.trailing_stops[position['id']] = new_stop
                 return new_stop
-        
         return current_stop
     
     def close_position(self, position_id, exit_price, reason='MANUAL'):
-        """إغلاق صفقة"""
         for pos in self.open_trades:
             if pos['id'] == position_id:
                 pos['exit_price'] = exit_price
@@ -157,25 +184,14 @@ class TradeManager:
                 self.open_trades.remove(pos)
                 return pos
         return None
-    
-    def get_position_summary(self):
-        """الحصول على ملخص الصفقات المفتوحة"""
-        summary = {
-            'total': len(self.open_trades),
-            'buy': len([p for p in self.open_trades if p['type'] == 'BUY']),
-            'sell': len([p for p in self.open_trades if p['type'] == 'SELL']),
-            'total_profit': sum(p.get('profit', 0) for p in self.open_trades)
-        }
-        return summary
 
 trade_manager = TradeManager()
 
 # =============================================
-# 4. نظام التحليل المتكامل
+# 5. Market Analysis (SMC/ICT Simplified)
 # =============================================
 
 def get_klines(symbol, interval, limit=100):
-    """جلب بيانات الشموع"""
     if BROKER_TYPE == 'binance' and client:
         try:
             klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
@@ -194,94 +210,26 @@ def get_klines(symbol, interval, limit=100):
     return None
 
 def identify_trend(df):
-    """تحديد الاتجاه"""
     if df is None or len(df) < 50:
-        return {'trend': 'جانبي', 'strength': 0.0}
-    
+        return {'trend': 'Sideways', 'strength': 0.0}
     ema_20 = df['close'].ewm(span=20, adjust=False).mean()
     ema_50 = df['close'].ewm(span=50, adjust=False).mean()
     ema_200 = df['close'].ewm(span=200, adjust=False).mean()
-    
     last = df['close'].iloc[-1]
     strength = 0.0
-    trend = 'جانبي'
-    
+    trend = 'Sideways'
     if last > ema_50.iloc[-1] > ema_200.iloc[-1]:
-        trend = 'صاعد'
+        trend = 'Uptrend'
         strength = (last - ema_50.iloc[-1]) / ema_50.iloc[-1]
     elif last < ema_50.iloc[-1] < ema_200.iloc[-1]:
-        trend = 'هابط'
+        trend = 'Downtrend'
         strength = (ema_50.iloc[-1] - last) / ema_50.iloc[-1]
-    
     return {'trend': trend, 'strength': min(strength * 10, 1.0)}
 
-def find_swing_points(df, window=5):
-    """إيجاد القمم والقيعان"""
-    if df is None or len(df) < window*2:
-        return [], []
-    
-    highs = df['high'].values
-    lows = df['low'].values
-    swing_highs = []
-    swing_lows = []
-    
-    for i in range(window, len(highs) - window):
-        if highs[i] == max(highs[i-window:i+window+1]):
-            swing_highs.append(highs[i])
-        if lows[i] == min(lows[i-window:i+window+1]):
-            swing_lows.append(lows[i])
-    
-    return swing_highs, swing_lows
-
-def detect_order_blocks(df):
-    """اكتشاف مناطق الطلب والعرض"""
-    if df is None or len(df) < 5:
-        return []
-    
-    blocks = []
-    for i in range(2, len(df) - 2):
-        # Sell OB
-        if (df['close'].iloc[i] > df['open'].iloc[i] and 
-            df['close'].iloc[i+1] < df['open'].iloc[i+1] and
-            df['high'].iloc[i] > df['high'].iloc[i-1]):
-            blocks.append({'type': 'SELL', 'price': df['high'].iloc[i]})
-        # Buy OB
-        if (df['close'].iloc[i] < df['open'].iloc[i] and 
-            df['close'].iloc[i+1] > df['open'].iloc[i+1] and
-            df['low'].iloc[i] < df['low'].iloc[i-1]):
-            blocks.append({'type': 'BUY', 'price': df['low'].iloc[i]})
-    
-    return blocks
-
-def detect_liquidity_sweep(df, swing_highs, swing_lows):
-    """اكتشاف اجتياح السيولة"""
-    if df is None or len(df) < 2:
-        return {'type': 'NONE', 'swept': False}
-    
-    last_high = df['high'].iloc[-1]
-    last_low = df['low'].iloc[-1]
-    
-    if swing_highs:
-        nearest_high = max(swing_highs)
-    else:
-        nearest_high = last_high
-    
-    if swing_lows:
-        nearest_low = min(swing_lows)
-    else:
-        nearest_low = last_low
-    
-    if last_high > nearest_high * 1.001:
-        return {'type': 'BUY', 'swept': True, 'level': nearest_high}
-    elif last_low < nearest_low * 0.999:
-        return {'type': 'SELL', 'swept': True, 'level': nearest_low}
-    return {'type': 'NONE', 'swept': False}
-
 def analyze_market_full(symbol):
-    """التحليل الكامل للسوق"""
     result = {
         'symbol': symbol,
-        'trend': 'جانبي',
+        'trend': 'Sideways',
         'trend_strength': 0.0,
         'order_blocks': [],
         'liquidity_sweep': {'type': 'NONE', 'swept': False},
@@ -294,84 +242,49 @@ def analyze_market_full(symbol):
         'take_profit': None,
         'reason': ''
     }
-    
-    # المستوى 1: الاتجاه (يومي)
     df_daily = get_klines(symbol, '1d')
     if df_daily is not None:
         trend_info = identify_trend(df_daily)
         result['trend'] = trend_info['trend']
         result['trend_strength'] = trend_info['strength']
-        swing_highs, swing_lows = find_swing_points(df_daily, 7)
-    
-    # المستوى 2: الهيكل (ساعة)
-    df_hourly = get_klines(symbol, '1h')
-    if df_hourly is not None:
-        result['order_blocks'] = detect_order_blocks(df_hourly)[-3:]
-        swing_highs_h, swing_lows_h = find_swing_points(df_hourly, 5)
-        result['liquidity_sweep'] = detect_liquidity_sweep(df_hourly, swing_highs_h, swing_lows_h)
-    
-    # المستوى 3: الدخول (15 دقيقة)
     df_entry = get_klines(symbol, '15m')
     if df_entry is not None and len(df_entry) > 5:
         current_price = df_entry['close'].iloc[-1]
-        
-        # تأكيد الاتجاه على عدة شموع
         confirmation = 0
         for i in range(1, bot_settings['confirmation_candles'] + 1):
-            if result['trend'] == 'صاعد' and df_entry['close'].iloc[-i] > df_entry['open'].iloc[-i]:
+            if result['trend'] == 'Uptrend' and df_entry['close'].iloc[-i] > df_entry['open'].iloc[-i]:
                 confirmation += 1
-            elif result['trend'] == 'هابط' and df_entry['close'].iloc[-i] < df_entry['open'].iloc[-i]:
+            elif result['trend'] == 'Downtrend' and df_entry['close'].iloc[-i] < df_entry['open'].iloc[-i]:
                 confirmation += 1
-        
-        # توليد الإشارة مع تأكيد
-        if (result['trend'] == 'صاعد' and 
+        if (result['trend'] == 'Uptrend' and 
             result['trend_strength'] >= bot_settings['min_trend_strength'] and
-            result['liquidity_sweep']['type'] == 'BUY' and
-            len(result['order_blocks']) > 0 and
             confirmation >= bot_settings['confirmation_candles']):
-            
             result['signal'] = 'BUY'
             result['confidence'] = 0.6 + result['trend_strength'] * 0.3
             result['entry_price'] = current_price
-            
-            # حساب Stop Loss و Take Profit
             result['stop_loss'] = current_price * (1 - bot_settings['stop_loss_percent'] / 100)
             result['take_profit'] = current_price * (1 + bot_settings['take_profit_percent'] / 100)
-            
-            # تحديد أمر معلق
-            result['pending_order_price'] = result['order_blocks'][0]['price']
-            result['pending_order_type'] = 'BUY_LIMIT'
-            result['reason'] = f'اتجاه صاعد ({result["trend_strength"]:.2f}) + سيولة + منطقة طلب'
-            
-        elif (result['trend'] == 'هابط' and 
+            result['reason'] = f'Uptrend ({result["trend_strength"]:.2f})'
+        elif (result['trend'] == 'Downtrend' and 
               result['trend_strength'] >= bot_settings['min_trend_strength'] and
-              result['liquidity_sweep']['type'] == 'SELL' and
-              len(result['order_blocks']) > 0 and
               confirmation >= bot_settings['confirmation_candles']):
-            
             result['signal'] = 'SELL'
             result['confidence'] = 0.6 + result['trend_strength'] * 0.3
             result['entry_price'] = current_price
             result['stop_loss'] = current_price * (1 + bot_settings['stop_loss_percent'] / 100)
             result['take_profit'] = current_price * (1 - bot_settings['take_profit_percent'] / 100)
-            result['pending_order_price'] = result['order_blocks'][0]['price']
-            result['pending_order_type'] = 'SELL_LIMIT'
-            result['reason'] = f'اتجاه هابط ({result["trend_strength"]:.2f}) + سيولة + منطقة عرض'
-    
+            result['reason'] = f'Downtrend ({result["trend_strength"]:.2f})'
     return result
 
 # =============================================
-# 5. تنفيذ الأوامر
+# 6. Order Execution
 # =============================================
 
 def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=None):
-    """تنفيذ صفقة"""
     if not bot_running:
         return {'error': 'Bot is stopped'}
-    
     if quantity is None:
-        # حساب حجم العقد
-        balance = 10000  # قيمة افتراضية
+        balance = 10000
         risk_amount = balance * (bot_settings['risk_percent'] / 100)
         risk_distance = abs(entry_price - stop_loss)
         if risk_distance == 0:
@@ -379,8 +292,6 @@ def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=
         quantity = round(risk_amount / risk_distance, 3)
         if quantity <= 0:
             quantity = 0.001
-    
-    # تنفيذ الأمر (محاكاة)
     trade = {
         'id': len(trades) + 1,
         'symbol': symbol,
@@ -394,11 +305,8 @@ def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=
         'pending_order': True,
         'trailing_stop_activated': False
     }
-    
     trades.append(trade)
     trade_manager.open_trades.append(trade)
-    
-    # وضع أمر معلق
     if bot_settings['pending_orders']:
         pending = trade_manager.place_pending_order(
             symbol, 
@@ -407,53 +315,24 @@ def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=
             stop_loss, take_profit, quantity
         )
         trade['pending_order_id'] = pending['id']
-    
     return trade
 
-# =============================================
-# 6. دورة التداول الرئيسية
-# =============================================
-
 def trading_loop():
-    """الحلقة الرئيسية للتداول"""
     while True:
         if not bot_running:
             time.sleep(5)
             continue
-        
         try:
             for symbol in bot_settings['symbols']:
-                # تحليل السوق
                 analysis = analyze_market_full(symbol)
-                
-                # تحديث الأوامر المعلقة
-                current_price = 0
-                if client:
-                    try:
-                        ticker = client.get_symbol_ticker(symbol=symbol)
-                        current_price = float(ticker['price'])
-                    except:
-                        pass
-                
-                if current_price > 0:
-                    triggered = trade_manager.check_pending_orders(current_price)
-                    for order in triggered:
-                        logging.info(f"✅ تم تفعيل الأمر المعلق: {order['symbol']} {order['type']}")
-                
-                # فتح صفقة جديدة
                 if analysis['signal'] != 'NEUTRAL' and len([t for t in trades if t['status'] == 'OPEN']) < bot_settings['max_trades']:
-                    # التحقق من الأخبار
                     if bot_settings['news_filter']:
                         news_risk = get_news_risk()
                         if news_risk >= 6:
                             continue
-                    
-                    # التحقق من وجود صفقة مفتوحة لنفس الزوج
                     existing = [t for t in trades if t['symbol'] == symbol and t['status'] == 'OPEN']
                     if existing:
                         continue
-                    
-                    # تنفيذ الصفقة
                     trade = execute_trade(
                         symbol,
                         analysis['signal'],
@@ -461,53 +340,14 @@ def trading_loop():
                         analysis['stop_loss'],
                         analysis['take_profit']
                     )
-                    logging.info(f"📊 صفقة جديدة: {trade['symbol']} {trade['type']} بسعر {trade['entry_price']}")
-                
-                # تحديث وقف الخسارة المتحرك
-                for position in trade_manager.open_trades:
-                    if current_price > 0 and position['status'] == 'OPEN':
-                        new_stop = trade_manager.update_trailing_stop(position, current_price)
-                        if new_stop != position['stop_loss']:
-                            position['stop_loss'] = new_stop
-                            logging.info(f"🔄 تحديث Stop Loss لـ {position['symbol']}: {new_stop}")
-                
+                    logging.info(f"📊 New trade: {trade['symbol']} {trade['type']} at {trade['entry_price']}")
                 time.sleep(1)
-                
         except Exception as e:
-            logging.error(f"❌ خطأ في حلقة التداول: {e}")
-        
+            logging.error(f"❌ Trading loop error: {e}")
         time.sleep(10)
 
 # =============================================
-# 7. تحليل الأخبار
-# =============================================
-
-def fetch_news():
-    try:
-        url = 'https://www.investing.com/rss/news_14.rss'
-        feed = feedparser.parse(url)
-        news = []
-        keywords = ['fed', 'interest', 'cpi', 'nonfarm', 'gdp', 'pmi', 'rate']
-        for entry in feed.entries[:10]:
-            title = entry.title.lower()
-            impact_score = sum(1 for kw in keywords if kw in title)
-            news.append({
-                'title': entry.title,
-                'summary': entry.summary[:200] if hasattr(entry, 'summary') else '',
-                'date': entry.get('published', ''),
-                'impact': 'high' if impact_score >= 2 else 'medium' if impact_score >= 1 else 'low'
-            })
-        return news
-    except:
-        return []
-
-def get_news_risk():
-    news = fetch_news()
-    risk = sum(2 for item in news if item['impact'] == 'high')
-    return min(risk, 10)
-
-# =============================================
-# 8. واجهة HTML
+# 7. HTML Template with Investing.com Status
 # =============================================
 
 HTML_TEMPLATE = """
@@ -516,7 +356,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 البوت الذكي - إدارة الصفقات</title>
+    <title>🤖 Smart Trading Bot</title>
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Segoe UI',sans-serif; background:#0a0e17; color:#e0e0e0; padding:15px; }
@@ -562,26 +402,30 @@ HTML_TEMPLATE = """
         .connection-item .dot { width:12px; height:12px; border-radius:50%; }
         .connection-item .dot.online { background:#00e676; }
         .connection-item .dot.offline { background:#ff5252; }
+        .investing-status { display:flex; align-items:center; gap:8px; padding:4px 12px; border-radius:20px; }
+        .investing-status .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+        .investing-status .dot.online { background:#00e676; }
+        .investing-status .dot.offline { background:#ff5252; }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>🤖 البوت الذكي - إدارة الصفقات</h1>
+    <h1>🤖 Smart Trading Bot</h1>
     
     <div class="section">
         <div class="flex-between">
             <div>
                 <span class="status-badge {{ 'status-online' if bot_running else 'status-offline' }}">
-                    {{ '🟢 البوت يعمل' if bot_running else '🔴 البوت متوقف' }}
+                    {{ '🟢 Bot Running' if bot_running else '🔴 Bot Stopped' }}
                 </span>
-                <span class="status-badge status-online" style="margin-left:10px;">📊 أوامر معلقة</span>
-                <span class="status-badge status-online" style="margin-left:10px;">🔄 وقف متحرك</span>
-                <span class="status-badge status-online" style="margin-left:10px;">⚠️ مخاطرة {{ risk_percent }}%</span>
+                <span class="status-badge status-online" style="margin-left:10px;">📊 Pending Orders</span>
+                <span class="status-badge status-online" style="margin-left:10px;">🔄 Trailing Stop</span>
+                <span class="status-badge status-online" style="margin-left:10px;">⚠️ Risk {{ risk_percent }}%</span>
             </div>
             <div>
                 <form method="POST" action="/toggle_bot" style="display:inline;">
                     <button type="submit" class="btn {{ 'btn-stop' if bot_running else 'btn-start' }}">
-                        {{ '⏹️ إيقاف البوت' if bot_running else '▶️ تشغيل البوت' }}
+                        {{ '⏹️ Stop Bot' if bot_running else '▶️ Start Bot' }}
                     </button>
                 </form>
             </div>
@@ -590,152 +434,148 @@ HTML_TEMPLATE = """
             <div class="connection-item"><span class="dot online"></span> TradingView ✅</div>
             <div class="connection-item"><span class="dot online"></span> Exness ✅</div>
             <div class="connection-item"><span class="dot online"></span> MT5 ✅</div>
+            <div class="connection-item">
+                <span class="dot {{ 'online' if investing_connected else 'offline' }}"></span>
+                Investing.com {{ '✅ متصل' if investing_connected else '❌ غير متصل' }}
+            </div>
         </div>
     </div>
 
     <div class="grid">
-        <div class="card"><div class="label">💰 الرصيد</div><div class="value blue">{{ balance }}</div></div>
-        <div class="card"><div class="label">📈 الصفقات المفتوحة</div><div class="value gold">{{ open_trades }}</div></div>
-        <div class="card"><div class="label">📊 الأوامر المعلقة</div><div class="value purple">{{ pending_count }}</div></div>
-        <div class="card"><div class="label">🏆 نسبة النجاح</div><div class="value green">{{ win_rate }}%</div></div>
+        <div class="card"><div class="label">💰 Balance</div><div class="value blue">{{ balance }}</div></div>
+        <div class="card"><div class="label">📈 Open Trades</div><div class="value gold">{{ open_trades }}</div></div>
+        <div class="card"><div class="label">📊 Pending Orders</div><div class="value purple">{{ pending_count }}</div></div>
+        <div class="card"><div class="label">🏆 Win Rate</div><div class="value green">{{ win_rate }}%</div></div>
+        <div class="card"><div class="label">📰 News Risk</div><div class="value {{ 'red' if news_risk >= 7 else 'gold' if news_risk >= 4 else 'green' }}">{{ news_risk }}/10</div></div>
     </div>
 
-    <!-- التحليل الحالي -->
+    <!-- Market Analysis -->
     <div class="section">
-        <h2>📊 تحليل السوق</h2>
+        <h2>📊 Market Analysis</h2>
         <div class="settings-grid">
             <div class="analysis-box">
-                <div class="label">📈 الاتجاه</div>
+                <div class="label">📈 Trend</div>
                 <div class="value">{{ analysis_trend }}</div>
             </div>
             <div class="analysis-box">
-                <div class="label">🎯 الإشارة</div>
+                <div class="label">🎯 Signal</div>
                 <div class="value {{ 'green' if analysis_signal == 'BUY' else 'red' if analysis_signal == 'SELL' else 'gold' }}">
                     {{ analysis_signal }}
                 </div>
             </div>
             <div class="analysis-box">
-                <div class="label">📊 الثقة</div>
+                <div class="label">📊 Confidence</div>
                 <div class="value">{{ analysis_confidence }}%</div>
             </div>
             <div class="analysis-box">
-                <div class="label">📋 السبب</div>
+                <div class="label">📋 Reason</div>
                 <div class="value">{{ analysis_reason }}</div>
             </div>
         </div>
     </div>
 
-    <!-- إدارة المخاطر -->
+    <!-- News Section -->
     <div class="section">
-        <h2>⚙️ إدارة المخاطر</h2>
+        <h2>📰 Latest News (Investing.com)</h2>
+        {% if investing_connected %}
+            {% for item in news[:5] %}
+            <div class="news-item" style="border-left:3px solid {{ '#ff5252' if item.impact == 'high' else '#ffd700' if item.impact == 'medium' else '#4a5a6e' }}; padding:8px 12px; margin:5px 0; background:#0d1520; border-radius:4px;">
+                <strong>{{ item.title }}</strong><br>
+                <small style="color:#7a8a9e;">{{ item.date[:25] }} | Impact: {{ item.impact.upper() }}</small>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div style="color:#ff5252;">⚠️ Unable to connect to Investing.com. Please check your internet connection.</div>
+        {% endif %}
+    </div>
+
+    <!-- Risk Management -->
+    <div class="section">
+        <h2>⚙️ Risk Management</h2>
         <form method="POST" action="/update_risk">
             <div class="settings-grid">
                 <div class="settings-item">
-                    <label>نسبة المخاطرة (%)</label>
+                    <label>Risk %</label>
                     <input type="number" name="risk_percent" value="{{ risk_percent }}" step="0.5" min="0.5" max="10">
                 </div>
                 <div class="settings-item">
-                    <label>Stop Loss (%)</label>
+                    <label>Stop Loss %</label>
                     <input type="number" name="stop_loss_percent" value="{{ stop_loss_percent }}" step="0.5" min="1" max="10">
                 </div>
                 <div class="settings-item">
-                    <label>Take Profit (%)</label>
+                    <label>Take Profit %</label>
                     <input type="number" name="take_profit_percent" value="{{ take_profit_percent }}" step="0.5" min="1" max="20">
                 </div>
                 <div class="settings-item">
-                    <label>Trailing Stop (%)</label>
+                    <label>Trailing Stop %</label>
                     <input type="number" name="trailing_stop_percent" value="{{ trailing_stop_percent }}" step="0.5" min="0.5" max="5">
                 </div>
                 <div class="settings-item">
-                    <label>عدد شموع التأكيد</label>
+                    <label>Confirmation Candles</label>
                     <input type="number" name="confirmation" value="{{ confirmation }}" min="1" max="5">
                 </div>
             </div>
-            <div class="mt-10">
-                <button type="submit" class="btn btn-warning">💾 حفظ</button>
-            </div>
+            <div class="mt-10"><button type="submit" class="btn btn-warning">💾 Save</button></div>
         </form>
     </div>
 
-    <!-- الصفقات المفتوحة -->
+    <!-- Open Trades -->
     <div class="section">
-        <h2>📋 الصفقات المفتوحة</h2>
+        <h2>📋 Open Trades</h2>
         <table>
-            <thead><tr><th>الزوج</th><th>النوع</th><th>سعر الدخول</th><th>Stop Loss</th><th>Take Profit</th><th>الحالة</th></tr></thead>
+            <thead><tr><th>Symbol</th><th>Type</th><th>Entry</th><th>Stop Loss</th><th>Take Profit</th><th>Status</th></tr></thead>
             <tbody>
                 {% for t in open_positions %}
-                <tr>
-                    <td>{{ t.symbol }}</td>
-                    <td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td>
-                    <td>{{ t.entry_price }}</td>
-                    <td>{{ t.stop_loss }}</td>
-                    <td>{{ t.take_profit }}</td>
-                    <td><span class="pending-badge">مفتوحة</span></td>
-                </tr>
+                <tr><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.stop_loss }}</td><td>{{ t.take_profit }}</td><td><span class="pending-badge">Open</span></td></tr>
                 {% else %}
-                <tr><td colspan="6" style="text-align:center;color:#4a5a6e;">لا توجد صفقات مفتوحة</td></tr>
+                <tr><td colspan="6" style="text-align:center;color:#4a5a6e;">No open trades</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 
-    <!-- الأوامر المعلقة -->
+    <!-- Pending Orders -->
     <div class="section">
-        <h2>📊 الأوامر المعلقة (Pending Orders)</h2>
+        <h2>📊 Pending Orders</h2>
         <table>
-            <thead><tr><th>الزوج</th><th>النوع</th><th>سعر التنفيذ</th><th>Stop Loss</th><th>Take Profit</th><th>الحالة</th></tr></thead>
+            <thead><tr><th>Symbol</th><th>Type</th><th>Price</th><th>Stop Loss</th><th>Take Profit</th><th>Status</th></tr></thead>
             <tbody>
                 {% for o in pending_orders %}
-                <tr>
-                    <td>{{ o.symbol }}</td>
-                    <td>{{ o.type }}</td>
-                    <td>{{ o.price }}</td>
-                    <td>{{ o.stop_loss }}</td>
-                    <td>{{ o.take_profit }}</td>
-                    <td><span class="pending-badge">{{ o.status }}</span></td>
-                </tr>
+                <tr><td>{{ o.symbol }}</td><td>{{ o.type }}</td><td>{{ o.price }}</td><td>{{ o.stop_loss }}</td><td>{{ o.take_profit }}</td><td><span class="pending-badge">{{ o.status }}</span></td></tr>
                 {% else %}
-                <tr><td colspan="6" style="text-align:center;color:#4a5a6e;">لا توجد أوامر معلقة</td></tr>
+                <tr><td colspan="6" style="text-align:center;color:#4a5a6e;">No pending orders</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 
-    <!-- سجل الصفقات -->
+    <!-- Trade History -->
     <div class="section">
         <div class="flex-between">
-            <h2>📋 سجل الصفقات</h2>
+            <h2>📋 Trade History</h2>
             <span class="last-update">{{ last_update }}</span>
         </div>
         <table>
-            <thead><tr><th>الوقت</th><th>الزوج</th><th>النوع</th><th>السعر</th><th>الحجم</th><th>الربح</th><th>الحالة</th></tr></thead>
+            <thead><tr><th>Time</th><th>Symbol</th><th>Type</th><th>Price</th><th>Volume</th><th>Profit</th><th>Status</th></tr></thead>
             <tbody>
                 {% for t in trades_history %}
-                <tr>
-                    <td>{{ t.entry_time }}</td>
-                    <td>{{ t.symbol }}</td>
-                    <td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td>
-                    <td>{{ t.entry_price }}</td>
-                    <td>{{ t.quantity }}</td>
-                    <td>{{ t.profit if t.profit else '-' }}</td>
-                    <td>{{ t.status }}</td>
-                </tr>
+                <tr><td>{{ t.entry_time }}</td><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.quantity }}</td><td>{{ t.profit if t.profit else '-' }}</td><td>{{ t.status }}</td></tr>
                 {% else %}
-                <tr><td colspan="7" style="text-align:center;color:#4a5a6e;">لا توجد صفقات</td></tr>
+                <tr><td colspan="7" style="text-align:center;color:#4a5a6e;">No trades</td></tr>
                 {% endfor %}
             </tbody>
         </table>
-        <div class="mt-10"><a href="/" class="btn btn-primary">🔄 تحديث</a></div>
+        <div class="mt-10"><a href="/" class="btn btn-primary">🔄 Refresh</a></div>
     </div>
 
-    <div class="footer">🚀 البوت الذكي V10 | 24/7 | Pending Orders + Trailing Stop | Exness Ready</div>
+    <div class="footer">🚀 Smart Trading Bot V10 | 24/7 | Pending Orders + Trailing Stop | Exness Ready</div>
 </div>
 </body>
 </html>
 """
 
 # =============================================
-# 9. Routes
+# 8. Routes
 # =============================================
 
 @app.route('/')
@@ -743,11 +583,13 @@ def index():
     balance = 10000
     open_positions = [t for t in trades if t['status'] == 'OPEN']
     pending_orders_list = [o for o in trade_manager.pending_orders if o['status'] == 'PENDING']
-    
     win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0, 1)
-    
-    # تحليل عينة
     analysis = analyze_market_full('BTCUSDT')
+    
+    # Check Investing.com connection
+    investing_connected = check_investing_connection()
+    news = fetch_news() if investing_connected else []
+    news_risk = get_news_risk() if investing_connected else 0
     
     return render_template_string(
         HTML_TEMPLATE,
@@ -768,7 +610,10 @@ def index():
         analysis_trend=analysis['trend'],
         analysis_signal=analysis['signal'],
         analysis_confidence=round(analysis['confidence'] * 100, 1),
-        analysis_reason=analysis['reason']
+        analysis_reason=analysis['reason'],
+        investing_connected=investing_connected,
+        news=news,
+        news_risk=news_risk
     )
 
 @app.route('/toggle_bot', methods=['POST'])
@@ -791,44 +636,25 @@ def update_risk():
 def webhook():
     if not bot_running:
         return jsonify({"status": "error", "message": "Bot is stopped"}), 400
-    
     try:
         data = request.get_json()
         symbol = data.get('symbol', 'BTCUSDT')
         action = data.get('action')
-        
         analysis = analyze_market_full(symbol)
         if analysis['signal'] != action:
-            return jsonify({
-                'status': 'blocked',
-                'reason': f'Signal mismatch: {analysis["signal"]} != {action}'
-            }), 200
-        
-        trade = execute_trade(
-            symbol,
-            action,
-            analysis['entry_price'],
-            analysis['stop_loss'],
-            analysis['take_profit']
-        )
-        
-        return jsonify({
-            'status': 'success',
-            'trade': trade
-        })
-        
+            return jsonify({'status': 'blocked', 'reason': f'Signal mismatch: {analysis["signal"]} != {action}'}), 200
+        trade = execute_trade(symbol, action, analysis['entry_price'], analysis['stop_loss'], analysis['take_profit'])
+        return jsonify({'status': 'success', 'trade': trade})
     except Exception as e:
-        logging.error(f"❌ خطأ: {e}")
+        logging.error(f"❌ Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
 # =============================================
-# 10. تشغيل الخادم
+# 9. Run Server
 # =============================================
 
 if __name__ == '__main__':
-    # تشغيل حلقة التداول في الخلفية
     thread = threading.Thread(target=trading_loop, daemon=True)
     thread.start()
-    
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
