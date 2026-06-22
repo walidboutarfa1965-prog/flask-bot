@@ -1,3 +1,4 @@
+from mt5_connection import MT5Connector
 import os
 import time
 import threading
