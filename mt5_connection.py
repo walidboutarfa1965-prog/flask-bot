@@ -3,9 +3,17 @@ try:
 except ImportError:
     import mt5linux as mt5
     print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
-    import logging
+
+import logging
 
 logging.basicConfig(level=logging.INFO)
+
+# =============================================
+# بيانات الحساب (Exness)
+# =============================================
+ACCOUNT = 262946340
+PASSWORD = 'Mama1965.'
+SERVER = 'Exness-MT5Trial16'
 
 class MT5Connector:
     def __init__(self, account=None, password=None, server=None):
@@ -13,11 +21,11 @@ class MT5Connector:
         تهيئة الاتصال بـ MetaTrader 5
         - account: رقم الحساب (مثال: 262946340)
         - password: كلمة المرور
-        - server: اسم السيرفر (مثال: Exness-MT5Trial)
+        - server: اسم السيرفر (مثال: Exness-MT5Trial16)
         """
-        self.account = account
-        self.password = password
-        self.server = server
+        self.account = account if account else ACCOUNT
+        self.password = password if password else PASSWORD
+        self.server = server if server else SERVER
         self.connected = False
     
     def connect(self):
@@ -28,7 +36,7 @@ class MT5Connector:
                 logging.error("❌ فشل تهيئة MT5")
                 return False
             
-            # تسجيل الدخول إذا توفرت البيانات
+            # تسجيل الدخول
             if self.account and self.password and self.server:
                 if mt5.login(int(self.account), self.password, self.server):
                     logging.info(f"✅ تم الاتصال بـ MT5 (الحساب: {self.account})")
@@ -38,12 +46,13 @@ class MT5Connector:
                     account_info = mt5.account_info()
                     if account_info:
                         logging.info(f"💰 الرصيد: {account_info.balance:.2f} {account_info.currency}")
+                        logging.info(f"📊 الهامش المستخدم: {account_info.margin:.2f}")
+                        logging.info(f"📊 الهامش المتاح: {account_info.margin_free:.2f}")
                     return True
                 else:
                     logging.error(f"❌ فشل تسجيل الدخول: {mt5.last_error()}")
                     return False
             else:
-                # اتصال بدون تسجيل دخول (للمستخدمين الذين لديهم جلسة مفتوحة)
                 self.connected = True
                 logging.info("✅ تم الاتصال بـ MT5 (بدون تسجيل دخول)")
                 return True
@@ -176,9 +185,11 @@ class MT5Connector:
             logging.error(f"❌ خطأ في الإغلاق: {e}")
             return None
 
-# اختبار سريع (تشغيل مباشر)
+# =============================================
+# اختبار الاتصال
+# =============================================
 if __name__ == "__main__":
-    # اختبار الاتصال
+    # اختبار الاتصال بالبيانات المضافة
     connector = MT5Connector()
     if connector.connect():
         print("✅ تم الاتصال بـ MT5 بنجاح!")
