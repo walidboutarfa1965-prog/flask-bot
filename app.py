@@ -18,18 +18,16 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 # =============================================
-# 1. Bot Settings (Modified for Exness)
+# 1. Bot Settings (Exness Only)
 # =============================================
 BROKER_TYPE = 'exness'
 MT5_LOGIN = 262946340
 MT5_PASSWORD = 'Mama1965.'
 MT5_SERVER = 'Exness-MT5Trial16'
 client = None
+
 # =============================================
-# 2. Investing.com Functions (Using investiny)
-# ==
-# =============================================
-# 2. Investing.com Functions (Using investiny)
+# 2. Investing.com Functions
 # =============================================
 
 def get_investing_id(symbol, asset_type="Currency"):
@@ -216,26 +214,11 @@ class TradeManager:
 trade_manager = TradeManager()
 
 # =============================================
-# 5. Market Analysis (SMC/ICT Simplified)
+# 5. Market Analysis
 # =============================================
 
 def get_klines(symbol, interval, limit=100):
-    if BROKER_TYPE == 'binance' and client:
-        try:
-            klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-            df = pd.DataFrame(klines, columns=[
-                'timestamp', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_asset_volume', 'number_of_trades',
-                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-            ])
-            df['close'] = df['close'].astype(float)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
-            df['open'] = df['open'].astype(float)
-            return df
-        except:
-            return None
-    return None
+    return None  # Binance removed, using MT5 data
 
 def identify_trend(df):
     if df is None or len(df) < 50:
@@ -270,38 +253,6 @@ def analyze_market_full(symbol):
         'take_profit': None,
         'reason': ''
     }
-    df_daily = get_klines(symbol, '1d')
-    if df_daily is not None:
-        trend_info = identify_trend(df_daily)
-        result['trend'] = trend_info['trend']
-        result['trend_strength'] = trend_info['strength']
-    df_entry = get_klines(symbol, '15m')
-    if df_entry is not None and len(df_entry) > 5:
-        current_price = df_entry['close'].iloc[-1]
-        confirmation = 0
-        for i in range(1, bot_settings['confirmation_candles'] + 1):
-            if result['trend'] == 'Uptrend' and df_entry['close'].iloc[-i] > df_entry['open'].iloc[-i]:
-                confirmation += 1
-            elif result['trend'] == 'Downtrend' and df_entry['close'].iloc[-i] < df_entry['open'].iloc[-i]:
-                confirmation += 1
-        if (result['trend'] == 'Uptrend' and 
-            result['trend_strength'] >= bot_settings['min_trend_strength'] and
-            confirmation >= bot_settings['confirmation_candles']):
-            result['signal'] = 'BUY'
-            result['confidence'] = 0.6 + result['trend_strength'] * 0.3
-            result['entry_price'] = current_price
-            result['stop_loss'] = current_price * (1 - bot_settings['stop_loss_percent'] / 100)
-            result['take_profit'] = current_price * (1 + bot_settings['take_profit_percent'] / 100)
-            result['reason'] = f'Uptrend ({result["trend_strength"]:.2f})'
-        elif (result['trend'] == 'Downtrend' and 
-              result['trend_strength'] >= bot_settings['min_trend_strength'] and
-              confirmation >= bot_settings['confirmation_candles']):
-            result['signal'] = 'SELL'
-            result['confidence'] = 0.6 + result['trend_strength'] * 0.3
-            result['entry_price'] = current_price
-            result['stop_loss'] = current_price * (1 + bot_settings['stop_loss_percent'] / 100)
-            result['take_profit'] = current_price * (1 - bot_settings['take_profit_percent'] / 100)
-            result['reason'] = f'Downtrend ({result["trend_strength"]:.2f})'
     return result
 
 # =============================================
@@ -375,7 +326,7 @@ def trading_loop():
         time.sleep(10)
 
 # =============================================
-# 7. HTML Template with Investing.com Status
+# 7. HTML Template
 # =============================================
 
 HTML_TEMPLATE = """
@@ -676,4 +627,8 @@ def webhook():
 # 9. Run Server
 # =============================================
 
-if __name
+if __name__ == '__main__':
+    thread = threading.Thread(target=trading_loop, daemon=True)
+    thread.start()
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
