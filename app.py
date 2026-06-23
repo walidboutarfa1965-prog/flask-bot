@@ -92,4 +92,4 @@ class MT5Connector:
                 logging.error(f"❌ فشل التنفيذ: {result.comment}")
                 return None
         except Exception as e:
-            logging.error(f"❌ خطأ في التنفيذ: {e
+            logging.error(f"❌ خطأ في التنفيذ: {e}")
