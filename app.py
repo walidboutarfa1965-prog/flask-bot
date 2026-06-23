@@ -1,4 +1,4 @@
-  from mt5_connection import MT5Connector
+from mt5_connection import MT5Connector
 import os
 import time
 import threading
@@ -27,7 +27,7 @@ MT5_SERVER = 'Exness-MT5Trial16'
 client = None
 
 # =============================================
-# 2. Investing.com Functions
+# 2. Investing.com Functions (Improved)
 # =============================================
 
 def get_investing_id(symbol, asset_type="Currency"):
@@ -56,35 +56,73 @@ def get_investing_data(symbol, from_date="01/01/2024", to_date="01/06/2024"):
         return None
 
 def check_investing_connection():
+    """Check if Investing.com API is accessible"""
     try:
+        # Try multiple methods to check connection
         results = search_assets(query="EUR/USD", limit=1, type="Currency")
-        return len(results) > 0
-    except:
+        if results and len(results) > 0:
+            logging.info("✅ Investing.com API is accessible")
+            return True
+        
+        # Alternative check using RSS
+        url = 'https://www.investing.com/rss/news_14.rss'
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            logging.info("✅ Investing.com RSS is accessible")
+            return True
+            
+        return False
+    except Exception as e:
+        logging.error(f"❌ Investing.com connection failed: {e}")
         return False
 
 def fetch_news_investiny():
+    """Fetch news from Investing.com RSS with fallback"""
     try:
+        # Primary: RSS feed
         url = 'https://www.investing.com/rss/news_14.rss'
         feed = feedparser.parse(url)
-        news = []
-        keywords = ['fed', 'interest', 'cpi', 'nonfarm', 'gdp', 'pmi', 'rate']
-        for entry in feed.entries[:10]:
-            title = entry.title.lower()
-            impact_score = sum(1 for kw in keywords if kw in title)
-            news.append({
-                'title': entry.title,
-                'summary': entry.summary[:200] if hasattr(entry, 'summary') else '',
-                'date': entry.get('published', ''),
-                'impact': 'high' if impact_score >= 2 else 'medium' if impact_score >= 1 else 'low'
-            })
-        return news
+        
+        if feed.entries:
+            news = []
+            keywords = ['fed', 'interest', 'cpi', 'nonfarm', 'gdp', 'pmi', 'rate']
+            for entry in feed.entries[:10]:
+                title = entry.title.lower()
+                impact_score = sum(1 for kw in keywords if kw in title)
+                news.append({
+                    'title': entry.title,
+                    'summary': entry.summary[:200] if hasattr(entry, 'summary') else '',
+                    'date': entry.get('published', ''),
+                    'impact': 'high' if impact_score >= 2 else 'medium' if impact_score >= 1 else 'low',
+                    'link': entry.get('link', '')
+                })
+            logging.info(f"✅ Fetched {len(news)} news from Investing.com")
+            return news
+        
+        # Fallback: Alternative RSS
+        alt_url = 'https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC'
+        alt_feed = feedparser.parse(alt_url)
+        if alt_feed.entries:
+            news = []
+            for entry in alt_feed.entries[:5]:
+                news.append({
+                    'title': entry.title,
+                    'summary': entry.summary[:200] if hasattr(entry, 'summary') else '',
+                    'date': entry.get('published', ''),
+                    'impact': 'medium',
+                    'link': entry.get('link', '')
+                })
+            logging.info(f"✅ Fetched {len(news)} news from Yahoo Finance (fallback)")
+            return news
+            
+        return []
     except Exception as e:
         logging.error(f"❌ Error fetching news: {e}")
         return []
 
 def get_news_risk():
     news = fetch_news_investiny()
-    risk = sum(2 for item in news if item['impact'] == 'high')
+    risk = sum(2 for item in news if item.get('impact') == 'high')
     return min(risk, 10)
 
 def get_investing_price(symbol):
