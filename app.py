@@ -24,18 +24,10 @@ BROKER_TYPE = 'exness'
 MT5_LOGIN = 262946340
 MT5_PASSWORD = 'Mama1965.'
 MT5_SERVER = 'Exness-MT5Trial16'
-BINANCE_API_KEY = os.getenv('BINANCE_API_KEY', '')
-BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET', '')
-
 client = None
-if BROKER_TYPE == 'binance':
-    try:
-        from binance.client import Client
-        client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, testnet=True)
-        logging.info("✅ Binance Testnet")
-    except:
-        logging.error("❌ Failed to connect to Binance")
-
+# =============================================
+# 2. Investing.com Functions (Using investiny)
+# ==
 # =============================================
 # 2. Investing.com Functions (Using investiny)
 # =============================================
