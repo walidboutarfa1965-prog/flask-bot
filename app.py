@@ -1,4 +1,9 @@
-from mt5_connection import MT5Connector
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    import mt5linux as mt5
+    print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
+
 import os
 import time
 import threading
