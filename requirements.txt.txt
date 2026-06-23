@@ -1,5 +1,8 @@
 flask
 gunicorn
-python-binance
 python-dotenv
 requests
+feedparser
+pandas
+numpy
+mt5linux
