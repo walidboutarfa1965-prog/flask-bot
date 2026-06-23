@@ -41,7 +41,6 @@ if BROKER_TYPE == 'binance':
 # =============================================
 
 def get_investing_id(symbol, asset_type="Currency"):
-    """Get the Investing.com ID for a symbol"""
     try:
         results = search_assets(query=symbol, limit=1, type=asset_type)
         if results:
@@ -52,7 +51,6 @@ def get_investing_id(symbol, asset_type="Currency"):
         return None
 
 def get_investing_data(symbol, from_date="01/01/2024", to_date="01/06/2024"):
-    """Get historical data from Investing.com"""
     try:
         investing_id = get_investing_id(symbol)
         if not investing_id:
@@ -68,7 +66,6 @@ def get_investing_data(symbol, from_date="01/01/2024", to_date="01/06/2024"):
         return None
 
 def check_investing_connection():
-    """Check if Investing.com API is accessible"""
     try:
         results = search_assets(query="EUR/USD", limit=1, type="Currency")
         return len(results) > 0
@@ -76,7 +73,6 @@ def check_investing_connection():
         return False
 
 def fetch_news_investiny():
-    """Fetch news using RSS (Investing.com)"""
     try:
         url = 'https://www.investing.com/rss/news_14.rss'
         feed = feedparser.parse(url)
@@ -97,13 +93,11 @@ def fetch_news_investiny():
         return []
 
 def get_news_risk():
-    """Calculate news risk score (0-10)"""
     news = fetch_news_investiny()
     risk = sum(2 for item in news if item['impact'] == 'high')
     return min(risk, 10)
 
 def get_investing_price(symbol):
-    """Get current price from Investing.com"""
     try:
         data = get_investing_data(symbol, 
                                   from_date=(datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y"),
@@ -624,7 +618,6 @@ def index():
     win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0, 1)
     analysis = analyze_market_full('BTCUSDT')
     
-    # Check Investing.com connection
     investing_connected = check_investing_connection()
     news = fetch_news_investiny() if investing_connected else []
     news_risk = get_news_risk() if investing_connected else 0
@@ -691,8 +684,4 @@ def webhook():
 # 9. Run Server
 # =============================================
 
-if __name__ == '__main__':
-    thread = threading.Thread(target=trading_loop, daemon=True)
-    thread.start()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name
