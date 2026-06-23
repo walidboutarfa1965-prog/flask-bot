@@ -1,6 +1,5 @@
 flask
 gunicorn
-python-binance
 python-dotenv
 requests
 feedparser
