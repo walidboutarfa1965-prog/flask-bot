@@ -1,95 +1,633 @@
-try:
-    import MetaTrader5 as mt5
-except ImportError:
-    import mt5linux as mt5
-    print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
-
+  from mt5_connection import MT5Connector
+import os
+import time
+import threading
 import logging
+from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
+from flask import Flask, request, jsonify, render_template_string
+from dotenv import load_dotenv
+import requests
+import feedparser
+from investiny import historical_data, search_assets
 
+load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-# =============================================
-# بيانات الحساب (Exness)
-# =============================================
-ACCOUNT = 262946340
-PASSWORD = 'Mama1965.'
-SERVER = 'Exness-MT5Trial16'
+app = Flask(__name__)
 
-class MT5Connector:
-    def __init__(self, account=None, password=None, server=None):
-        self.account = account if account else ACCOUNT
-        self.password = password if password else PASSWORD
-        self.server = server if server else SERVER
-        self.connected = False
+# =============================================
+# 1. Bot Settings (Exness Only)
+# =============================================
+BROKER_TYPE = 'exness'
+MT5_LOGIN = 262946340
+MT5_PASSWORD = 'Mama1965.'
+MT5_SERVER = 'Exness-MT5Trial16'
+client = None
+
+# =============================================
+# 2. Investing.com Functions
+# =============================================
+
+def get_investing_id(symbol, asset_type="Currency"):
+    try:
+        results = search_assets(query=symbol, limit=1, type=asset_type)
+        if results:
+            return int(results[0]["ticker"])
+        return None
+    except Exception as e:
+        logging.error(f"❌ Error getting Investing ID: {e}")
+        return None
+
+def get_investing_data(symbol, from_date="01/01/2024", to_date="01/06/2024"):
+    try:
+        investing_id = get_investing_id(symbol)
+        if not investing_id:
+            return None
+        data = historical_data(
+            investing_id=investing_id,
+            from_date=from_date,
+            to_date=to_date
+        )
+        return data
+    except Exception as e:
+        logging.error(f"❌ Error fetching data from Investing.com: {e}")
+        return None
+
+def check_investing_connection():
+    try:
+        results = search_assets(query="EUR/USD", limit=1, type="Currency")
+        return len(results) > 0
+    except:
+        return False
+
+def fetch_news_investiny():
+    try:
+        url = 'https://www.investing.com/rss/news_14.rss'
+        feed = feedparser.parse(url)
+        news = []
+        keywords = ['fed', 'interest', 'cpi', 'nonfarm', 'gdp', 'pmi', 'rate']
+        for entry in feed.entries[:10]:
+            title = entry.title.lower()
+            impact_score = sum(1 for kw in keywords if kw in title)
+            news.append({
+                'title': entry.title,
+                'summary': entry.summary[:200] if hasattr(entry, 'summary') else '',
+                'date': entry.get('published', ''),
+                'impact': 'high' if impact_score >= 2 else 'medium' if impact_score >= 1 else 'low'
+            })
+        return news
+    except Exception as e:
+        logging.error(f"❌ Error fetching news: {e}")
+        return []
+
+def get_news_risk():
+    news = fetch_news_investiny()
+    risk = sum(2 for item in news if item['impact'] == 'high')
+    return min(risk, 10)
+
+def get_investing_price(symbol):
+    try:
+        data = get_investing_data(symbol, 
+                                  from_date=(datetime.now() - timedelta(days=1)).strftime("%d/%m/%Y"),
+                                  to_date=datetime.now().strftime("%d/%m/%Y"))
+        if data is not None and len(data) > 0:
+            return float(data['close'].iloc[-1])
+        return None
+    except:
+        return None
+
+# =============================================
+# 3. Bot Data
+# =============================================
+trades = []
+active_positions = []
+pending_orders = []
+total_trades = 0
+winning_trades = 0
+bot_running = True
+
+bot_settings = {
+    'default_quantity': 0.01,
+    'max_trades': 5,
+    'symbols': ['BTCUSDT', 'ETHUSDT', 'XAUUSD', 'EURUSD'],
+    'risk_percent': 2.0,
+    'stop_loss_percent': 2.0,
+    'take_profit_percent': 4.0,
+    'trailing_stop_percent': 1.5,
+    'auto_lot': True,
+    'broker_name': 'Exness',
+    'use_ai': True,
+    'use_mtf': True,
+    'news_filter': True,
+    'pending_orders': True,
+    'timeframes': {
+        'trend': '1d',
+        'structure': '1h',
+        'entry': '15m'
+    },
+    'confirmation_candles': 2,
+    'min_trend_strength': 0.6,
+}
+
+# =============================================
+# 4. Trade Manager
+# =============================================
+
+class TradeManager:
+    def __init__(self):
+        self.open_trades = []
+        self.closed_trades = []
+        self.pending_orders = []
+        self.trailing_stops = {}
     
-    def connect(self):
-        try:
-            if not mt5.initialize():
-                logging.error("❌ فشل تهيئة MT5")
-                return False
-            if self.account and self.password and self.server:
-                if mt5.login(int(self.account), self.password, self.server):
-                    logging.info(f"✅ تم الاتصال بـ MT5 (الحساب: {self.account})")
-                    self.connected = True
-                    account_info = mt5.account_info()
-                    if account_info:
-                        logging.info(f"💰 الرصيد: {account_info.balance:.2f} {account_info.currency}")
-                    return True
-                else:
-                    logging.error(f"❌ فشل تسجيل الدخول")
-                    return False
-            self.connected = True
-            return True
-        except Exception as e:
-            logging.error(f"❌ خطأ في الاتصال: {e}")
-            return False
+    def place_pending_order(self, symbol, order_type, price, stop_loss, take_profit, quantity):
+        order = {
+            'id': len(self.pending_orders) + 1,
+            'symbol': symbol,
+            'type': order_type,
+            'price': price,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'quantity': quantity,
+            'status': 'PENDING',
+            'created_at': datetime.now().isoformat(),
+            'triggered': False
+        }
+        self.pending_orders.append(order)
+        return order
     
-    def disconnect(self):
-        mt5.shutdown()
-        self.connected = False
-        logging.info("✅ تم فصل الاتصال بـ MT5")
-    
-    def get_balance(self):
-        if not self.connected:
-            self.connect()
-        account_info = mt5.account_info()
-        return account_info.balance if account_info else 0
-    
-    def get_price(self, symbol):
-        if not self.connected:
-            self.connect()
-        tick = mt5.symbol_info_tick(symbol)
-        return tick.ask if tick else 0
-    
-    def place_order(self, symbol, action, volume, stop_loss=None, take_profit=None, comment="Bot"):
-        if not self.connected:
-            self.connect()
-        try:
-            price = self.get_price(symbol)
-            if price == 0:
-                logging.error("❌ فشل الحصول على السعر")
-                return None
-            order_type = mt5.ORDER_TYPE_BUY if action == 'BUY' else mt5.ORDER_TYPE_SELL
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": volume,
-                "type": order_type,
-                "price": price,
-                "sl": stop_loss,
-                "tp": take_profit,
-                "deviation": 20,
-                "magic": 234000,
-                "comment": comment,
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
-            result = mt5.order_send(request)
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
-                logging.info(f"✅ {action} {symbol} | السعر: {price} | الحجم: {volume}")
-                return result
+    def check_pending_orders(self, current_price):
+        triggered = []
+        for order in self.pending_orders:
+            if order['status'] != 'PENDING':
+                continue
+            should_trigger = False
+            if order['type'] in ['BUY_LIMIT', 'BUY_STOP']:
+                if order['type'] == 'BUY_LIMIT' and current_price <= order['price']:
+                    should_trigger = True
+                elif order['type'] == 'BUY_STOP' and current_price >= order['price']:
+                    should_trigger = True
             else:
-                logging.error(f"❌ فشل التنفيذ: {result.comment}")
-                return None
+                if order['type'] == 'SELL_LIMIT' and current_price >= order['price']:
+                    should_trigger = True
+                elif order['type'] == 'SELL_STOP' and current_price <= order['price']:
+                    should_trigger = True
+            if should_trigger:
+                order['status'] = 'TRIGGERED'
+                order['triggered_at'] = datetime.now().isoformat()
+                triggered.append(order)
+        return triggered
+    
+    def update_trailing_stop(self, position, current_price):
+        if position['id'] not in self.trailing_stops:
+            self.trailing_stops[position['id']] = position['stop_loss']
+        current_stop = self.trailing_stops[position['id']]
+        if position['type'] == 'BUY':
+            new_stop = current_price * (1 - bot_settings['trailing_stop_percent'] / 100)
+            if new_stop > current_stop:
+                self.trailing_stops[position['id']] = new_stop
+                return new_stop
+        else:
+            new_stop = current_price * (1 + bot_settings['trailing_stop_percent'] / 100)
+            if new_stop < current_stop:
+                self.trailing_stops[position['id']] = new_stop
+                return new_stop
+        return current_stop
+    
+    def close_position(self, position_id, exit_price, reason='MANUAL'):
+        for pos in self.open_trades:
+            if pos['id'] == position_id:
+                pos['exit_price'] = exit_price
+                pos['exit_time'] = datetime.now().isoformat()
+                pos['status'] = 'CLOSED'
+                pos['reason'] = reason
+                pos['profit'] = (exit_price - pos['entry_price']) * pos['quantity']
+                if pos['type'] == 'SELL':
+                    pos['profit'] = -pos['profit']
+                self.closed_trades.append(pos)
+                self.open_trades.remove(pos)
+                return pos
+        return None
+
+trade_manager = TradeManager()
+
+# =============================================
+# 5. Market Analysis
+# =============================================
+
+def get_klines(symbol, interval, limit=100):
+    return None
+
+def identify_trend(df):
+    if df is None or len(df) < 50:
+        return {'trend': 'Sideways', 'strength': 0.0}
+    ema_20 = df['close'].ewm(span=20, adjust=False).mean()
+    ema_50 = df['close'].ewm(span=50, adjust=False).mean()
+    ema_200 = df['close'].ewm(span=200, adjust=False).mean()
+    last = df['close'].iloc[-1]
+    strength = 0.0
+    trend = 'Sideways'
+    if last > ema_50.iloc[-1] > ema_200.iloc[-1]:
+        trend = 'Uptrend'
+        strength = (last - ema_50.iloc[-1]) / ema_50.iloc[-1]
+    elif last < ema_50.iloc[-1] < ema_200.iloc[-1]:
+        trend = 'Downtrend'
+        strength = (ema_50.iloc[-1] - last) / ema_50.iloc[-1]
+    return {'trend': trend, 'strength': min(strength * 10, 1.0)}
+
+def analyze_market_full(symbol):
+    result = {
+        'symbol': symbol,
+        'trend': 'Sideways',
+        'trend_strength': 0.0,
+        'order_blocks': [],
+        'liquidity_sweep': {'type': 'NONE', 'swept': False},
+        'signal': 'NEUTRAL',
+        'confidence': 0.0,
+        'pending_order_price': None,
+        'pending_order_type': None,
+        'entry_price': None,
+        'stop_loss': None,
+        'take_profit': None,
+        'reason': ''
+    }
+    return result
+
+# =============================================
+# 6. Order Execution
+# =============================================
+
+def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=None):
+    if not bot_running:
+        return {'error': 'Bot is stopped'}
+    if quantity is None:
+        balance = 10000
+        risk_amount = balance * (bot_settings['risk_percent'] / 100)
+        risk_distance = abs(entry_price - stop_loss)
+        if risk_distance == 0:
+            risk_distance = 0.01
+        quantity = round(risk_amount / risk_distance, 3)
+        if quantity <= 0:
+            quantity = 0.001
+    trade = {
+        'id': len(trades) + 1,
+        'symbol': symbol,
+        'type': action,
+        'entry_price': entry_price,
+        'stop_loss': stop_loss,
+        'take_profit': take_profit,
+        'quantity': quantity,
+        'entry_time': datetime.now().isoformat(),
+        'status': 'OPEN',
+        'pending_order': True,
+        'trailing_stop_activated': False
+    }
+    trades.append(trade)
+    trade_manager.open_trades.append(trade)
+    if bot_settings['pending_orders']:
+        pending = trade_manager.place_pending_order(
+            symbol, 
+            'BUY_LIMIT' if action == 'BUY' else 'SELL_LIMIT',
+            entry_price * 0.99 if action == 'BUY' else entry_price * 1.01,
+            stop_loss, take_profit, quantity
+        )
+        trade['pending_order_id'] = pending['id']
+    return trade
+
+def trading_loop():
+    while True:
+        if not bot_running:
+            time.sleep(5)
+            continue
+        try:
+            for symbol in bot_settings['symbols']:
+                analysis = analyze_market_full(symbol)
+                if analysis['signal'] != 'NEUTRAL' and len([t for t in trades if t['status'] == 'OPEN']) < bot_settings['max_trades']:
+                    if bot_settings['news_filter']:
+                        news_risk = get_news_risk()
+                        if news_risk >= 6:
+                            continue
+                    existing = [t for t in trades if t['symbol'] == symbol and t['status'] == 'OPEN']
+                    if existing:
+                        continue
+                    trade = execute_trade(
+                        symbol,
+                        analysis['signal'],
+                        analysis['entry_price'],
+                        analysis['stop_loss'],
+                        analysis['take_profit']
+                    )
+                    logging.info(f"📊 New trade: {trade['symbol']} {trade['type']} at {trade['entry_price']}")
+                time.sleep(1)
         except Exception as e:
-            logging.error(f"❌ خطأ في التنفيذ: {e}")
+            logging.error(f"❌ Trading loop error: {e}")
+        time.sleep(10)
+
+# =============================================
+# 7. HTML Template with Investing.com Status
+# =============================================
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Smart Trading Bot</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Segoe UI',sans-serif; background:#0a0e17; color:#e0e0e0; padding:15px; }
+        .container { max-width:1600px; margin:0 auto; }
+        h1 { text-align:center; color:#00d4ff; font-size:2rem; margin-bottom:25px; }
+        .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:15px; margin-bottom:20px; }
+        .card { background:#111927; border-radius:12px; padding:15px; border:1px solid #1a2a3a; }
+        .card .label { color:#7a8a9e; font-size:0.75rem; text-transform:uppercase; }
+        .card .value { font-size:1.3rem; font-weight:bold; margin-top:8px; }
+        .green { color:#00e676; } .red { color:#ff5252; } .blue { color:#00d4ff; } .gold { color:#ffd700; } .purple { color:#b388ff; }
+        .section { background:#111927; border-radius:12px; padding:15px; border:1px solid #1a2a3a; margin-bottom:15px; }
+        .section h2 { color:#00d4ff; font-size:1rem; margin-bottom:10px; }
+        .flex { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+        .flex-between { display:flex; justify-content:space-between; flex-wrap:wrap; align-items:center; }
+        .btn { padding:8px 18px; border:none; border-radius:8px; font-weight:bold; cursor:pointer; transition:0.3s; }
+        .btn:hover { transform:scale(1.02); }
+        .btn-primary { background:#00d4ff; color:#0a0e17; }
+        .btn-danger { background:#ff5252; color:#0a0e17; }
+        .btn-success { background:#00e676; color:#0a0e17; }
+        .btn-warning { background:#ffd700; color:#0a0e17; }
+        .btn-stop { background:#ff1744; color:#fff; }
+        .btn-start { background:#00e676; color:#0a0e17; }
+        .status-badge { display:inline-block; padding:4px 12px; border-radius:20px; font-size:0.8rem; }
+        .status-online { background:#00e67620; color:#00e676; border:1px solid #00e67640; }
+        .status-offline { background:#ff525220; color:#ff5252; border:1px solid #ff525240; }
+        .status-pending { background:#ffd70020; color:#ffd700; border:1px solid #ffd70040; }
+        table { width:100%; border-collapse:collapse; }
+        th { text-align:left; padding:8px; color:#7a8a9e; border-bottom:2px solid #1a2a3a; font-size:0.7rem; text-transform:uppercase; }
+        td { padding:8px; border-bottom:1px solid #1a2a3a; font-size:0.9rem; }
+        .buy { color:#00e676; } .sell { color:#ff5252; } .closed { color:#4a5a6e; }
+        .pending-badge { background:#ffd70020; color:#ffd700; padding:2px 8px; border-radius:12px; font-size:0.7rem; }
+        .last-update { color:#4a5a6e; font-size:0.7rem; }
+        .footer { text-align:center; margin-top:20px; color:#4a5a6e; font-size:0.8rem; }
+        .mt-10 { margin-top:10px; }
+        .mb-10 { margin-bottom:10px; }
+        .settings-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+        .settings-item label { display:block; color:#7a8a9e; font-size:0.75rem; margin-bottom:4px; }
+        .settings-item input { width:100%; padding:6px 10px; border-radius:6px; border:1px solid #1a2a3a; background:#0d1520; color:#e0e0e0; }
+        .analysis-box { background:#0d1520; padding:12px; border-radius:8px; border:1px solid #1a2a3a; }
+        .analysis-box .label { color:#7a8a9e; font-size:0.7rem; text-transform:uppercase; }
+        .analysis-box .value { font-size:0.9rem; margin-top:4px; }
+        .connection-item { display:flex; align-items:center; gap:8px; background:#0d1520; padding:8px 15px; border-radius:8px; }
+        .connection-item .dot { width:12px; height:12px; border-radius:50%; }
+        .connection-item .dot.online { background:#00e676; }
+        .connection-item .dot.offline { background:#ff5252; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🤖 Smart Trading Bot</h1>
+    
+    <div class="section">
+        <div class="flex-between">
+            <div>
+                <span class="status-badge {{ 'status-online' if bot_running else 'status-offline' }}">
+                    {{ '🟢 Bot Running' if bot_running else '🔴 Bot Stopped' }}
+                </span>
+                <span class="status-badge status-online" style="margin-left:10px;">📊 Pending Orders</span>
+                <span class="status-badge status-online" style="margin-left:10px;">🔄 Trailing Stop</span>
+                <span class="status-badge status-online" style="margin-left:10px;">⚠️ Risk {{ risk_percent }}%</span>
+            </div>
+            <div>
+                <form method="POST" action="/toggle_bot" style="display:inline;">
+                    <button type="submit" class="btn {{ 'btn-stop' if bot_running else 'btn-start' }}">
+                        {{ '⏹️ Stop Bot' if bot_running else '▶️ Start Bot' }}
+                    </button>
+                </form>
+            </div>
+        </div>
+        <div class="flex" style="margin-top:10px; gap:10px;">
+            <div class="connection-item"><span class="dot online"></span> TradingView ✅</div>
+            <div class="connection-item"><span class="dot online"></span> Exness ✅</div>
+            <div class="connection-item"><span class="dot online"></span> MT5 ✅</div>
+            <div class="connection-item">
+                <span class="dot {{ 'online' if investing_connected else 'offline' }}"></span>
+                Investing.com {{ '✅ متصل' if investing_connected else '❌ غير متصل' }}
+            </div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card"><div class="label">💰 Balance</div><div class="value blue">{{ balance }}</div></div>
+        <div class="card"><div class="label">📈 Open Trades</div><div class="value gold">{{ open_trades }}</div></div>
+        <div class="card"><div class="label">📊 Pending Orders</div><div class="value purple">{{ pending_count }}</div></div>
+        <div class="card"><div class="label">🏆 Win Rate</div><div class="value green">{{ win_rate }}%</div></div>
+        <div class="card"><div class="label">📰 News Risk</div><div class="value {{ 'red' if news_risk >= 7 else 'gold' if news_risk >= 4 else 'green' }}">{{ news_risk }}/10</div></div>
+    </div>
+
+    <!-- Market Analysis -->
+    <div class="section">
+        <h2>📊 Market Analysis</h2>
+        <div class="settings-grid">
+            <div class="analysis-box">
+                <div class="label">📈 Trend</div>
+                <div class="value">{{ analysis_trend }}</div>
+            </div>
+            <div class="analysis-box">
+                <div class="label">🎯 Signal</div>
+                <div class="value {{ 'green' if analysis_signal == 'BUY' else 'red' if analysis_signal == 'SELL' else 'gold' }}">
+                    {{ analysis_signal }}
+                </div>
+            </div>
+            <div class="analysis-box">
+                <div class="label">📊 Confidence</div>
+                <div class="value">{{ analysis_confidence }}%</div>
+            </div>
+            <div class="analysis-box">
+                <div class="label">📋 Reason</div>
+                <div class="value">{{ analysis_reason }}</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- News Section -->
+    <div class="section">
+        <h2>📰 Latest News (Investing.com)</h2>
+        {% if investing_connected %}
+            {% for item in news[:5] %}
+            <div class="news-item" style="border-left:3px solid {{ '#ff5252' if item.impact == 'high' else '#ffd700' if item.impact == 'medium' else '#4a5a6e' }}; padding:8px 12px; margin:5px 0; background:#0d1520; border-radius:4px;">
+                <strong>{{ item.title }}</strong><br>
+                <small style="color:#7a8a9e;">{{ item.date[:25] }} | Impact: {{ item.impact.upper() }}</small>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div style="color:#ff5252;">⚠️ Unable to connect to Investing.com. Please check your internet connection.</div>
+        {% endif %}
+    </div>
+
+    <!-- Risk Management -->
+    <div class="section">
+        <h2>⚙️ Risk Management</h2>
+        <form method="POST" action="/update_risk">
+            <div class="settings-grid">
+                <div class="settings-item">
+                    <label>Risk %</label>
+                    <input type="number" name="risk_percent" value="{{ risk_percent }}" step="0.5" min="0.5" max="10">
+                </div>
+                <div class="settings-item">
+                    <label>Stop Loss %</label>
+                    <input type="number" name="stop_loss_percent" value="{{ stop_loss_percent }}" step="0.5" min="1" max="10">
+                </div>
+                <div class="settings-item">
+                    <label>Take Profit %</label>
+                    <input type="number" name="take_profit_percent" value="{{ take_profit_percent }}" step="0.5" min="1" max="20">
+                </div>
+                <div class="settings-item">
+                    <label>Trailing Stop %</label>
+                    <input type="number" name="trailing_stop_percent" value="{{ trailing_stop_percent }}" step="0.5" min="0.5" max="5">
+                </div>
+                <div class="settings-item">
+                    <label>Confirmation Candles</label>
+                    <input type="number" name="confirmation" value="{{ confirmation }}" min="1" max="5">
+                </div>
+            </div>
+            <div class="mt-10"><button type="submit" class="btn btn-warning">💾 Save</button></div>
+        </form>
+    </div>
+
+    <!-- Open Trades -->
+    <div class="section">
+        <h2>📋 Open Trades</h2>
+        <table>
+            <thead><tr><th>Symbol</th><th>Type</th><th>Entry</th><th>Stop Loss</th><th>Take Profit</th><th>Status</th></tr></thead>
+            <tbody>
+                {% for t in open_positions %}
+                <tr><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.stop_loss }}</td><td>{{ t.take_profit }}</td><td><span class="pending-badge">Open</span></td></tr>
+                {% else %}
+                <tr><td colspan="6" style="text-align:center;color:#4a5a6e;">No open trades</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pending Orders -->
+    <div class="section">
+        <h2>📊 Pending Orders</h2>
+        <table>
+            <thead><tr><th>Symbol</th><th>Type</th><th>Price</th><th>Stop Loss</th><th>Take Profit</th><th>Status</th></tr></thead>
+            <tbody>
+                {% for o in pending_orders %}
+                <tr><td>{{ o.symbol }}</td><td>{{ o.type }}</td><td>{{ o.price }}</td><td>{{ o.stop_loss }}</td><td>{{ o.take_profit }}</td><td><span class="pending-badge">{{ o.status }}</span></td></tr>
+                {% else %}
+                <tr><td colspan="6" style="text-align:center;color:#4a5a6e;">No pending orders</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Trade History -->
+    <div class="section">
+        <div class="flex-between">
+            <h2>📋 Trade History</h2>
+            <span class="last-update">{{ last_update }}</span>
+        </div>
+        <table>
+            <thead><tr><th>Time</th><th>Symbol</th><th>Type</th><th>Price</th><th>Volume</th><th>Profit</th><th>Status</th></tr></thead>
+            <tbody>
+                {% for t in trades_history %}
+                <tr><td>{{ t.entry_time }}</td><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.quantity }}</td><td>{{ t.profit if t.profit else '-' }}</td><td>{{ t.status }}</td></tr>
+                {% else %}
+                <tr><td colspan="7" style="text-align:center;color:#4a5a6e;">No trades</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="footer">🚀 Smart Trading Bot V10 | 24/7 | Pending Orders + Trailing Stop | Exness Ready</div>
+</div>
+</body>
+</html>
+"""
+
+# =============================================
+# 8. Routes
+# =============================================
+
+@app.route('/')
+def index():
+    balance = 10000
+    open_positions = [t for t in trades if t['status'] == 'OPEN']
+    pending_orders_list = [o for o in trade_manager.pending_orders if o['status'] == 'PENDING']
+    win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0, 1)
+    analysis = analyze_market_full('BTCUSDT')
+    
+    investing_connected = check_investing_connection()
+    news = fetch_news_investiny() if investing_connected else []
+    news_risk = get_news_risk() if investing_connected else 0
+    
+    return render_template_string(
+        HTML_TEMPLATE,
+        balance=f"{balance:.2f} USDT",
+        open_trades=len(open_positions),
+        pending_count=len(pending_orders_list),
+        win_rate=win_rate,
+        open_positions=open_positions,
+        pending_orders=pending_orders_list,
+        trades_history=[t for t in trades if t['status'] == 'CLOSED'][-10:],
+        last_update=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        risk_percent=bot_settings['risk_percent'],
+        stop_loss_percent=bot_settings['stop_loss_percent'],
+        take_profit_percent=bot_settings['take_profit_percent'],
+        trailing_stop_percent=bot_settings['trailing_stop_percent'],
+        confirmation=bot_settings['confirmation_candles'],
+        bot_running=bot_running,
+        analysis_trend=analysis['trend'],
+        analysis_signal=analysis['signal'],
+        analysis_confidence=round(analysis['confidence'] * 100, 1),
+        analysis_reason=analysis['reason'],
+        investing_connected=investing_connected,
+        news=news,
+        news_risk=news_risk
+    )
+
+@app.route('/toggle_bot', methods=['POST'])
+def toggle_bot():
+    global bot_running
+    bot_running = not bot_running
+    return index()
+
+@app.route('/update_risk', methods=['POST'])
+def update_risk():
+    global bot_settings
+    bot_settings['risk_percent'] = float(request.form.get('risk_percent', 2.0))
+    bot_settings['stop_loss_percent'] = float(request.form.get('stop_loss_percent', 2.0))
+    bot_settings['take_profit_percent'] = float(request.form.get('take_profit_percent', 4.0))
+    bot_settings['trailing_stop_percent'] = float(request.form.get('trailing_stop_percent', 1.5))
+    bot_settings['confirmation_candles'] = int(request.form.get('confirmation', 2))
+    return index()
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if not bot_running:
+        return jsonify({"status": "error", "message": "Bot is stopped"}), 400
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol', 'BTCUSDT')
+        action = data.get('action')
+        analysis = analyze_market_full(symbol)
+        if analysis['signal'] != action:
+            return jsonify({'status': 'blocked', 'reason': f'Signal mismatch: {analysis["signal"]} != {action}'}), 200
+        trade = execute_trade(symbol, action, analysis['entry_price'], analysis['stop_loss'], analysis['take_profit'])
+        return jsonify({'status': 'success', 'trade': trade})
+    except Exception as e:
+        logging.error(f"❌ Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+# =============================================
+# 9. Run Server
+# =============================================
+
+if __name__ == '__main__':
+    thread = threading.Thread(target=trading_loop, daemon=True)
+    thread.start()
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
