@@ -480,7 +480,7 @@ def trading_loop():
         time.sleep(10)
 
 # =============================================
-# 7. HTML Template
+# 7. HTML Template (مختصر للخادم)
 # =============================================
 
 HTML_TEMPLATE = """
@@ -493,7 +493,7 @@ HTML_TEMPLATE = """
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Segoe UI',sans-serif; background:#0a0e17; color:#e0e0e0; padding:15px; }
-        .container { max-width:1600px; margin:0 auto; }
+        .container { max-width:1200px; margin:0 auto; }
         h1 { text-align:center; color:#00d4ff; font-size:2rem; margin-bottom:25px; }
         .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:15px; margin-bottom:20px; }
         .card { background:#111927; border-radius:12px; padding:15px; border:1px solid #1a2a3a; }
@@ -507,35 +507,23 @@ HTML_TEMPLATE = """
         .btn { padding:8px 18px; border:none; border-radius:8px; font-weight:bold; cursor:pointer; transition:0.3s; }
         .btn:hover { transform:scale(1.02); }
         .btn-primary { background:#00d4ff; color:#0a0e17; }
-        .btn-danger { background:#ff5252; color:#0a0e17; }
-        .btn-success { background:#00e676; color:#0a0e17; }
-        .btn-warning { background:#ffd700; color:#0a0e17; }
         .btn-stop { background:#ff1744; color:#fff; }
         .btn-start { background:#00e676; color:#0a0e17; }
+        .btn-warning { background:#ffd700; color:#0a0e17; }
         .status-badge { display:inline-block; padding:4px 12px; border-radius:20px; font-size:0.8rem; }
         .status-online { background:#00e67620; color:#00e676; border:1px solid #00e67640; }
         .status-offline { background:#ff525220; color:#ff5252; border:1px solid #ff525240; }
-        .status-pending { background:#ffd70020; color:#ffd700; border:1px solid #ffd70040; }
         table { width:100%; border-collapse:collapse; }
         th { text-align:left; padding:8px; color:#7a8a9e; border-bottom:2px solid #1a2a3a; font-size:0.7rem; text-transform:uppercase; }
         td { padding:8px; border-bottom:1px solid #1a2a3a; font-size:0.9rem; }
-        .buy { color:#00e676; } .sell { color:#ff5252; } .closed { color:#4a5a6e; }
-        .pending-badge { background:#ffd70020; color:#ffd700; padding:2px 8px; border-radius:12px; font-size:0.7rem; }
-        .last-update { color:#4a5a6e; font-size:0.7rem; }
+        .buy { color:#00e676; } .sell { color:#ff5252; }
         .footer { text-align:center; margin-top:20px; color:#4a5a6e; font-size:0.8rem; }
         .mt-10 { margin-top:10px; }
-        .mb-10 { margin-bottom:10px; }
         .settings-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
         .settings-item label { display:block; color:#7a8a9e; font-size:0.75rem; margin-bottom:4px; }
         .settings-item input { width:100%; padding:6px 10px; border-radius:6px; border:1px solid #1a2a3a; background:#0d1520; color:#e0e0e0; }
-        .analysis-box { background:#0d1520; padding:12px; border-radius:8px; border:1px solid #1a2a3a; }
-        .analysis-box .label { color:#7a8a9e; font-size:0.7rem; text-transform:uppercase; }
-        .analysis-box .value { font-size:0.9rem; margin-top:4px; }
-        .connection-item { display:flex; align-items:center; gap:8px; background:#0d1520; padding:8px 15px; border-radius:8px; }
-        .connection-item .dot { width:12px; height:12px; border-radius:50%; }
-        .connection-item .dot.online { background:#00e676; }
-        .connection-item .dot.offline { background:#ff5252; }
         .badge-smc { background:#7c4dff20; color:#7c4dff; padding:2px 10px; border-radius:12px; font-size:0.7rem; border:1px solid #7c4dff40; }
+        .news-item { border-left:3px solid #4a5a6e; padding:8px 12px; margin:5px 0; background:#0d1520; border-radius:4px; }
     </style>
 </head>
 <body>
@@ -548,9 +536,6 @@ HTML_TEMPLATE = """
                 <span class="status-badge {{ 'status-online' if bot_running else 'status-offline' }}">
                     {{ '🟢 Bot Running' if bot_running else '🔴 Bot Stopped' }}
                 </span>
-                <span class="status-badge status-online" style="margin-left:10px;">📊 Pending Orders</span>
-                <span class="status-badge status-online" style="margin-left:10px;">🔄 Trailing Stop</span>
-                <span class="status-badge status-online" style="margin-left:10px;">⚠️ Risk {{ risk_percent }}%</span>
                 <span class="badge-smc" style="margin-left:10px;">🧠 SMC + ICT + Volume Profile</span>
             </div>
             <div>
@@ -562,15 +547,6 @@ HTML_TEMPLATE = """
                 <a href="/status" class="btn btn-primary" style="display:inline-block;text-decoration:none;">📊 Status</a>
             </div>
         </div>
-        <div class="flex" style="margin-top:10px; gap:10px;">
-            <div class="connection-item"><span class="dot online"></span> TradingView ✅</div>
-            <div class="connection-item"><span class="dot online"></span> Exness ✅</div>
-            <div class="connection-item"><span class="dot {{ 'online' if mt5_available else 'offline' }}"></span> MT5 {{ '✅' if mt5_available else '❌' }}</div>
-            <div class="connection-item">
-                <span class="dot {{ 'online' if investing_connected else 'offline' }}"></span>
-                Investing.com {{ '✅ متصل' if investing_connected else '❌ غير متصل' }}
-            </div>
-        </div>
     </div>
 
     <div class="grid">
@@ -578,47 +554,31 @@ HTML_TEMPLATE = """
         <div class="card"><div class="label">📈 Open Trades</div><div class="value gold">{{ open_trades }}</div></div>
         <div class="card"><div class="label">📊 Pending Orders</div><div class="value purple">{{ pending_count }}</div></div>
         <div class="card"><div class="label">🏆 Win Rate</div><div class="value green">{{ win_rate }}%</div></div>
-        <div class="card"><div class="label">📰 News Risk</div><div class="value {{ 'red' if news_risk >= 7 else 'gold' if news_risk >= 4 else 'green' }}">{{ news_risk }}/10</div></div>
+        <div class="card"><div class="label">📰 News Risk</div><div class="value green">{{ news_risk }}/10</div></div>
     </div>
 
     <!-- Market Analysis -->
     <div class="section">
-        <h2>📊 Market Analysis <span class="badge-smc">استراتيجية SMC+ICT</span></h2>
+        <h2>📊 Market Analysis</h2>
         <div class="settings-grid">
-            <div class="analysis-box">
-                <div class="label">📈 Trend</div>
-                <div class="value">{{ analysis_trend }}</div>
-            </div>
-            <div class="analysis-box">
-                <div class="label">🎯 Signal</div>
-                <div class="value {{ 'green' if analysis_signal == 'BUY' else 'red' if analysis_signal == 'SELL' else 'gold' }}">
-                    {{ analysis_signal }}
-                </div>
-            </div>
-            <div class="analysis-box">
-                <div class="label">📊 Confidence</div>
-                <div class="value">{{ analysis_confidence }}%</div>
-            </div>
-            <div class="analysis-box">
-                <div class="label">📋 Reason</div>
-                <div class="value">{{ analysis_reason }}</div>
-            </div>
+            <div class="card"><div class="label">📈 Trend</div><div class="value">{{ analysis_trend }}</div></div>
+            <div class="card"><div class="label">🎯 Signal</div><div class="value {{ 'green' if analysis_signal == 'BUY' else 'red' if analysis_signal == 'SELL' else 'gold' }}">{{ analysis_signal }}</div></div>
+            <div class="card"><div class="label">📊 Confidence</div><div class="value">{{ analysis_confidence }}%</div></div>
+            <div class="card"><div class="label">📋 Reason</div><div class="value">{{ analysis_reason }}</div></div>
         </div>
     </div>
 
-    <!-- News Section -->
+    <!-- News -->
     <div class="section">
-        <h2>📰 Latest News (Investing.com)</h2>
-        {% if investing_connected %}
-            {% for item in news[:5] %}
-            <div class="news-item" style="border-left:3px solid {{ '#ff5252' if item.impact == 'high' else '#ffd700' if item.impact == 'medium' else '#4a5a6e' }}; padding:8px 12px; margin:5px 0; background:#0d1520; border-radius:4px;">
-                <strong>{{ item.title }}</strong><br>
-                <small style="color:#7a8a9e;">{{ item.date[:25] }} | Impact: {{ item.impact.upper() }}</small>
-            </div>
-            {% endfor %}
+        <h2>📰 Latest News</h2>
+        {% for item in news[:5] %}
+        <div class="news-item" style="border-left-color: {{ '#ff5252' if item.impact == 'high' else '#ffd700' if item.impact == 'medium' else '#4a5a6e' }};">
+            <strong>{{ item.title }}</strong><br>
+            <small style="color:#7a8a9e;">{{ item.date[:25] }} | Impact: {{ item.impact.upper() }}</small>
+        </div>
         {% else %}
-            <div style="color:#ff5252;">⚠️ Unable to connect to Investing.com. Please check your internet connection.</div>
-        {% endif %}
+        <div style="color:#4a5a6e;">No news available</div>
+        {% endfor %}
     </div>
 
     <!-- Risk Management -->
@@ -642,10 +602,6 @@ HTML_TEMPLATE = """
                     <label>Trailing Stop %</label>
                     <input type="number" name="trailing_stop_percent" value="{{ trailing_stop_percent }}" step="0.5" min="0.5" max="5">
                 </div>
-                <div class="settings-item">
-                    <label>Confirmation Candles</label>
-                    <input type="number" name="confirmation" value="{{ confirmation }}" min="1" max="5">
-                </div>
             </div>
             <div class="mt-10"><button type="submit" class="btn btn-warning">💾 Save</button></div>
         </form>
@@ -655,27 +611,12 @@ HTML_TEMPLATE = """
     <div class="section">
         <h2>📋 Open Trades</h2>
         <table>
-            <thead><tr><th>Symbol</th><th>Type</th><th>Entry</th><th>Stop Loss</th><th>Take Profit</th><th>Status</th></tr></thead>
+            <thead><tr><th>Symbol</th><th>Type</th><th>Entry</th><th>Stop Loss</th><th>Take Profit</th></tr></thead>
             <tbody>
                 {% for t in open_positions %}
-                <tr><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.stop_loss }}</td><td>{{ t.take_profit }}</td><td><span class="pending-badge">Open</span></td></tr>
+                <tr><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.stop_loss }}</td><td>{{ t.take_profit }}</td></tr>
                 {% else %}
-                <tr><td colspan="6" style="text-align:center;color:#4a5a6e;">No open trades</td></tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-
-    <!-- Pending Orders -->
-    <div class="section">
-        <h2>📊 Pending Orders</h2>
-        <table>
-            <thead><tr><th>Symbol</th><th>Type</th><th>Price</th><th>Stop Loss</th><th>Take Profit</th><th>Status</th></tr></thead>
-            <tbody>
-                {% for o in pending_orders %}
-                <tr><td>{{ o.symbol }}</td><td>{{ o.type }}</td><td>{{ o.price }}</td><td>{{ o.stop_loss }}</td><td>{{ o.take_profit }}</td><td><span class="pending-badge">{{ o.status }}</span></td></tr>
-                {% else %}
-                <tr><td colspan="6" style="text-align:center;color:#4a5a6e;">No pending orders</td></tr>
+                <tr><td colspan="5" style="text-align:center;color:#4a5a6e;">No open trades</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -683,23 +624,20 @@ HTML_TEMPLATE = """
 
     <!-- Trade History -->
     <div class="section">
-        <div class="flex-between">
-            <h2>📋 Trade History</h2>
-            <span class="last-update">{{ last_update }}</span>
-        </div>
+        <h2>📋 Trade History</h2>
         <table>
-            <thead><tr><th>Time</th><th>Symbol</th><th>Type</th><th>Price</th><th>Volume</th><th>Profit</th><th>Status</th></tr></thead>
+            <thead><tr><th>Time</th><th>Symbol</th><th>Type</th><th>Price</th><th>Volume</th><th>Status</th></tr></thead>
             <tbody>
                 {% for t in trades_history %}
-                <tr><td>{{ t.entry_time }}</td><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.quantity }}</td><td>{{ t.profit if t.profit else '-' }}</td><td>{{ t.status }}</td></tr>
+                <tr><td>{{ t.entry_time }}</td><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.quantity }}</td><td>{{ t.status }}</td></tr>
                 {% else %}
-                <tr><td colspan="7" style="text-align:center;color:#4a5a6e;">No trades</td></tr>
+                <tr><td colspan="6" style="text-align:center;color:#4a5a6e;">No trades</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 
-    <div class="footer">🚀 Smart Trading Bot V10 | SMC+ICT+Volume Profile | 24/7 | Exness Ready</div>
+    <div class="footer">🚀 Smart Trading Bot | SMC+ICT+Volume Profile | Exness Ready</div>
 </div>
 </body>
 </html>
@@ -715,7 +653,7 @@ def index():
     open_positions = [t for t in trades if t['status'] == 'OPEN']
     pending_orders_list = [o for o in legacy_manager.pending_orders if o['status'] == 'PENDING']
     
-    # حساب نسبة الفوز - التصحيح هنا
+    # حساب نسبة الفوز - التصحيح النهائي
     if total_trades > 0:
         win_rate = round((winning_trades / total_trades * 100), 1)
     else:
@@ -807,4 +745,4 @@ if __name__ == '__main__':
     thread = threading.Thread(target=trading_loop, daemon=True)
     thread.start()
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False)
