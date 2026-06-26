@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, jsonify, request  # ← أضفت render_template_string هنا
+from flask import Flask, render_template_string, jsonify, request
 import json
 import os
 import time
@@ -11,52 +11,110 @@ from dotenv import load_dotenv
 import requests
 import feedparser
 
-# محاولة استيراد MT5
-try:
-    import MetaTrader5 as mt5
-    print("✅ MetaTrader5 imported successfully")
-except ImportError:
-    try:
-        import mt5linux as mt5
-        print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
-        # إصلاح مشكلة mt5linux - بعض الإصدارات لا تحتوي على initialize
-        if not hasattr(mt5, 'initialize'):
-            # إنشاء دالة وهمية إذا كانت مفقودة
-            def mock_initialize():
-                print("⚠️ MT5 في وضع المحاكاة (بيانات وهمية)")
-                return True
-            mt5.initialize = mock_initialize
-            mt5.shutdown = lambda: None
-            mt5.copy_rates_from_pos = lambda symbol, tf, pos, count: None
-            mt5.TIMEFRAME_M1 = 1
-            mt5.TIMEFRAME_M5 = 5
-            mt5.TIMEFRAME_M15 = 15
-            mt5.TIMEFRAME_H1 = 60
-            mt5.TIMEFRAME_H4 = 240
-            mt5.TIMEFRAME_D1 = 1440
-    except ImportError:
-        mt5 = None
-        print("⚠️ MT5 غير مثبت - سيتم استخدام بيانات وهمية")
-
-# استيراد الاستراتيجية الجديدة
-try:
-    from strategy import SmartTradingBot
-    from analysis import *
-    from risk_manager import TradeManager
-except ImportError as e:
-    print(f"⚠️ خطأ في استيراد الملفات: {e}")
-    print("تأكد من وجود analysis.py, risk_manager.py, strategy.py في نفس المجلد")
-
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
 # =============================================
+# 0. تهيئة MetaTrader 5 (اتصال حقيقي)
+# =============================================
+
+# بيانات تسجيل الدخول - يمكنك تعديلها هنا أو عبر متغيرات البيئة
+MT5_LOGIN = int(os.getenv('MT5_LOGIN', 262946340))
+MT5_PASSWORD = os.getenv('MT5_PASSWORD', 'Mama1965.')
+MT5_SERVER = os.getenv('MT5_SERVER', 'Exness-MT5Trial16')
+
+# متغير لتخزين حالة الاتصال
+mt5_connected = False
+mt5 = None
+
+def initialize_mt5():
+    """محاولة الاتصال بـ MetaTrader 5"""
+    global mt5, mt5_connected
+    
+    try:
+        # محاولة استيراد MetaTrader5
+        try:
+            import MetaTrader5 as mt5_module
+            mt5 = mt5_module
+            print("✅ تم استيراد MetaTrader5 بنجاح")
+        except ImportError:
+            try:
+                import mt5linux as mt5_module
+                mt5 = mt5_module
+                print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
+            except ImportError:
+                mt5 = None
+                print("⚠️ MT5 غير مثبت - سيتم استخدام بيانات وهمية")
+                return False
+        
+        if mt5 is None:
+            return False
+        
+        # محاولة الاتصال بـ MT5
+        print(f"🔍 محاولة الاتصال بـ MT5...")
+        print(f"   📌 Login: {MT5_LOGIN}")
+        print(f"   📌 Server: {MT5_SERVER}")
+        
+        # تهيئة MT5 مع بيانات الدخول
+        initialized = mt5.initialize(
+            login=MT5_LOGIN,
+            password=MT5_PASSWORD,
+            server=MT5_SERVER
+        )
+        
+        if initialized:
+            mt5_connected = True
+            print("✅ تم الاتصال بـ MT5 بنجاح!")
+            
+            # جلب معلومات الحساب
+            account_info = mt5.account_info()
+            if account_info:
+                print(f"   📊 الحساب: {account_info.login}")
+                print(f"   💰 الرصيد: {account_info.balance:.2f}")
+                print(f"   📈 Equity: {account_info.equity:.2f}")
+            return True
+        else:
+            error = mt5.last_error()
+            print(f"❌ فشل الاتصال بـ MT5: {error}")
+            mt5_connected = False
+            return False
+            
+    except Exception as e:
+        print(f"❌ خطأ في الاتصال بـ MT5: {e}")
+        mt5_connected = False
+        return False
+
+# محاولة الاتصال عند بدء التشغيل
+mt5_connected = initialize_mt5()
+
+# =============================================
+# استيراد الاستراتيجية (بعد تهيئة MT5)
+# =============================================
+
+# استيراد الاستراتيجية الجديدة
+try:
+    from strategy import SmartTradingBot
+    from analysis import *
+    from risk_manager import TradeManager
+    print("✅ تم استيراد ملفات الاستراتيجية بنجاح")
+except ImportError as e:
+    print(f"⚠️ خطأ في استيراد الملفات: {e}")
+    print("تأكد من وجود analysis.py, risk_manager.py, strategy.py في نفس المجلد")
+    SmartTradingBot = None
+    TradeManager = None
+
+# =============================================
 # تهيئة البوت الجديد
 # =============================================
 try:
-    smart_bot = SmartTradingBot(initial_balance=10000)
+    if SmartTradingBot is not None:
+        smart_bot = SmartTradingBot(initial_balance=10000)
+        print("✅ تم تهيئة SmartTradingBot بنجاح")
+    else:
+        smart_bot = None
+        print("⚠️ SmartTradingBot غير معرف")
 except NameError:
     print("⚠️ SmartTradingBot غير معرف - تأكد من وجود strategy.py")
     smart_bot = None
@@ -65,9 +123,6 @@ except NameError:
 # 1. Bot Settings (Exness Only)
 # =============================================
 BROKER_TYPE = 'exness'
-MT5_LOGIN = 262946340
-MT5_PASSWORD = 'Mama1965.'
-MT5_SERVER = 'Exness-MT5Trial16'
 client = None
 
 # =============================================
@@ -300,33 +355,63 @@ legacy_manager = LegacyTradeManager()
 
 def get_klines(symbol, interval, limit=100):
     """جلب البيانات من MT5 أو مصدر آخر"""
-    if mt5 is None:
-        return None
-    try:
-        # التحقق من وجود initialize
-        if not hasattr(mt5, 'initialize') or mt5.initialize() is None:
-            return None
+    global mt5_connected, mt5
+    
+    # إذا كان MT5 متصلاً، استخدمه
+    if mt5_connected and mt5 is not None:
+        try:
+            timeframe_map = {
+                '1m': mt5.TIMEFRAME_M1,
+                '5m': mt5.TIMEFRAME_M5,
+                '15m': mt5.TIMEFRAME_M15,
+                '1h': mt5.TIMEFRAME_H1,
+                '4h': mt5.TIMEFRAME_H4,
+                '1d': mt5.TIMEFRAME_D1,
+            }
+            tf = timeframe_map.get(interval, mt5.TIMEFRAME_H1)
+            rates = mt5.copy_rates_from_pos(symbol, tf, 0, limit)
             
-        timeframe_map = {
-            '1m': mt5.TIMEFRAME_M1,
-            '5m': mt5.TIMEFRAME_M5,
-            '15m': mt5.TIMEFRAME_M15,
-            '1h': mt5.TIMEFRAME_H1,
-            '4h': mt5.TIMEFRAME_H4,
-            '1d': mt5.TIMEFRAME_D1,
-        }
-        tf = timeframe_map.get(interval, mt5.TIMEFRAME_H1)
-        rates = mt5.copy_rates_from_pos(symbol, tf, 0, limit)
-        if hasattr(mt5, 'shutdown'):
-            mt5.shutdown()
-        if rates is not None:
-            df = pd.DataFrame(rates)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
-            df.set_index('time', inplace=True)
-            return df
-        return None
+            if rates is not None and len(rates) > 0:
+                df = pd.DataFrame(rates)
+                df['time'] = pd.to_datetime(df['time'], unit='s')
+                df.set_index('time', inplace=True)
+                logging.info(f"✅ جلب {len(df)} شمعة من {symbol} على فريم {interval}")
+                return df
+            else:
+                logging.warning(f"⚠️ لا توجد بيانات لـ {symbol} على فريم {interval}")
+                return None
+        except Exception as e:
+            logging.error(f"❌ خطأ في جلب البيانات من MT5: {e}")
+            return None
+    
+    # إذا لم يكن MT5 متصلاً، استخدم بيانات وهمية
+    logging.warning(f"⚠️ MT5 غير متصل - استخدام بيانات وهمية لـ {symbol}")
+    return generate_mock_data(symbol, interval, limit)
+
+def generate_mock_data(symbol, interval, limit=100):
+    """توليد بيانات وهمية للاختبار"""
+    try:
+        # توليد بيانات وهمية
+        np.random.seed(42)
+        dates = pd.date_range(start=datetime.now() - timedelta(hours=limit), periods=limit, freq='1h')
+        base_price = 1.2000 if 'USD' in symbol else 100.0 if 'BTC' in symbol else 2000.0
+        
+        prices = base_price + np.cumsum(np.random.randn(limit) * 0.001)
+        df = pd.DataFrame({
+            'open': prices[:-1] if len(prices) > 1 else prices,
+            'high': prices + np.abs(np.random.randn(limit) * 0.001),
+            'low': prices - np.abs(np.random.randn(limit) * 0.001),
+            'close': prices,
+            'volume': np.random.randint(1000, 5000, limit)
+        }, index=dates)
+        
+        if len(df) > 1:
+            df = df.iloc[:-1]  # إزالة الصف الأخير للتطابق
+        
+        logging.info(f"ℹ️ تم توليد {len(df)} شمعة وهمية لـ {symbol}")
+        return df
     except Exception as e:
-        logging.error(f"❌ Error fetching klines: {e}")
+        logging.error(f"❌ خطأ في توليد البيانات الوهمية: {e}")
         return None
 
 def identify_trend(df):
@@ -364,10 +449,24 @@ def analyze_market_full(symbol):
         'reason': ''
     }
     
-    # محاولة استخدام الاستراتيجية الجديدة
+    # التحقق من الاتصال بـ MT5
+    if not mt5_connected:
+        result['reason'] = "⚠️ MT5 غير متصل - تحليل باستخدام بيانات وهمية"
+        # استخدام تحليل مبسط بالبيانات الوهمية
+        data = get_klines(symbol, '1h', 100)
+        if data is not None:
+            trend = identify_trend(data)
+            result['trend'] = trend['trend']
+            result['trend_strength'] = trend['strength']
+            result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
+            result['confidence'] = trend['strength']
+            result['reason'] = f"تحليل مبسط (بيانات وهمية): {trend['trend']}"
+        return result
+    
+    # إذا كان MT5 متصلاً والاستراتيجية متاحة
     try:
         if smart_bot is not None:
-            # جلب البيانات
+            # جلب البيانات من MT5
             data_h4 = get_klines(symbol, '4h', 100)
             data_h1 = get_klines(symbol, '1h', 100)
             data_m15 = get_klines(symbol, '15m', 100)
@@ -404,7 +503,7 @@ def analyze_market_full(symbol):
                     result['trend_strength'] = trend['strength']
                     result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
                     result['confidence'] = trend['strength']
-                    result['reason'] = f"تحليل تقليدي: {trend['trend']}"
+                    result['reason'] = f"تحليل تقليدي (بيانات MT5): {trend['trend']}"
         else:
             # استخدام التحليل التقليدي
             data = get_klines(symbol, '1h', 100)
@@ -414,7 +513,7 @@ def analyze_market_full(symbol):
                 result['trend_strength'] = trend['strength']
                 result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
                 result['confidence'] = trend['strength']
-                result['reason'] = f"تحليل تقليدي: {trend['trend']}"
+                result['reason'] = f"تحليل تقليدي (بيانات MT5): {trend['trend']}"
                 
     except Exception as e:
         logging.error(f"❌ تحليل السوق فشل: {e}")
@@ -427,9 +526,15 @@ def analyze_market_full(symbol):
 # =============================================
 
 def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=None):
-    global total_trades
+    global total_trades, winning_trades
     if not bot_running:
         return {'error': 'Bot is stopped'}
+    
+    # التحقق من الاتصال بـ MT5
+    if not mt5_connected:
+        logging.warning("⚠️ MT5 غير متصل - لا يمكن تنفيذ الصفقة")
+        return {'error': 'MT5 not connected'}
+    
     if quantity is None:
         balance = 10000
         risk_amount = balance * (bot_settings['risk_percent'] / 100)
@@ -439,32 +544,59 @@ def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=
         quantity = round(risk_amount / risk_distance, 3)
         if quantity <= 0:
             quantity = 0.001
-    trade = {
-        'id': len(trades) + 1,
-        'symbol': symbol,
-        'type': action,
-        'entry_price': entry_price,
-        'stop_loss': stop_loss,
-        'take_profit': take_profit,
-        'quantity': quantity,
-        'entry_time': datetime.now().isoformat(),
-        'status': 'OPEN',
-        'pending_order': True,
-        'trailing_stop_activated': False,
-        'profit': None
-    }
-    trades.append(trade)
-    legacy_manager.open_trades.append(trade)
-    total_trades += 1
-    if bot_settings['pending_orders']:
-        pending = legacy_manager.place_pending_order(
-            symbol, 
-            'BUY_LIMIT' if action == 'BUY' else 'SELL_LIMIT',
-            entry_price * 0.99 if action == 'BUY' else entry_price * 1.01,
-            stop_loss, take_profit, quantity
-        )
-        trade['pending_order_id'] = pending['id']
-    return trade
+    
+    # تنفيذ الصفقة عبر MT5
+    try:
+        order_type = mt5.ORDER_TYPE_BUY if action == 'BUY' else mt5.ORDER_TYPE_SELL
+        
+        # إعداد الطلب
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": quantity,
+            "type": order_type,
+            "price": entry_price,
+            "sl": stop_loss,
+            "tp": take_profit,
+            "deviation": 20,
+            "magic": 234000,
+            "comment": "Smart Bot",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        
+        # إرسال الطلب
+        result = mt5.order_send(request)
+        
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            trade = {
+                'id': len(trades) + 1,
+                'symbol': symbol,
+                'type': action,
+                'entry_price': entry_price,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'quantity': quantity,
+                'entry_time': datetime.now().isoformat(),
+                'status': 'OPEN',
+                'pending_order': False,
+                'trailing_stop_activated': False,
+                'profit': None,
+                'order_id': result.order
+            }
+            trades.append(trade)
+            legacy_manager.open_trades.append(trade)
+            total_trades += 1
+            logging.info(f"✅ صفقة {action} تم تنفيذها بنجاح: {symbol} @ {entry_price}")
+            return trade
+        else:
+            error_msg = f"فشل تنفيذ الصفقة: {result.retcode}"
+            logging.error(f"❌ {error_msg}")
+            return {'error': error_msg}
+            
+    except Exception as e:
+        logging.error(f"❌ خطأ في تنفيذ الصفقة: {e}")
+        return {'error': str(e)}
 
 def trading_loop():
     global winning_trades
@@ -473,6 +605,15 @@ def trading_loop():
             time.sleep(5)
             continue
         try:
+            # التحقق من الاتصال بـ MT5
+            if not mt5_connected:
+                logging.warning("⚠️ MT5 غير متصل - التداول متوقف")
+                time.sleep(30)
+                # محاولة إعادة الاتصال
+                global mt5_connected
+                mt5_connected = initialize_mt5()
+                continue
+            
             for symbol in bot_settings['symbols']:
                 analysis = analyze_market_full(symbol)
                 if analysis['signal'] != 'NEUTRAL' and len([t for t in trades if t['status'] == 'OPEN']) < bot_settings['max_trades']:
@@ -555,6 +696,9 @@ HTML_TEMPLATE = """
                     {{ '🟢 Bot Running' if bot_running else '🔴 Bot Stopped' }}
                 </span>
                 <span class="badge-smc" style="margin-left:10px;">🧠 SMC + ICT + Volume Profile</span>
+                <span class="badge-smc" style="margin-left:10px;background:#00e67620;color:#00e676;">
+                    MT5 {{ '✅ متصل' if mt5_available else '❌ غير متصل' }}
+                </span>
             </div>
             <div>
                 <form method="POST" action="/toggle_bot" style="display:inline;">
@@ -706,7 +850,7 @@ def index():
         investing_connected=investing_connected,
         news=news,
         news_risk=news_risk,
-        mt5_available=mt5 is not None
+        mt5_available=mt5_connected
     )
 
 @app.route('/toggle_bot', methods=['POST'])
@@ -747,11 +891,23 @@ def status():
     """الحصول على حالة البوت"""
     return jsonify({
         'bot_running': bot_running,
+        'mt5_connected': mt5_connected,
         'total_trades': total_trades,
         'winning_trades': winning_trades,
         'win_rate': round((winning_trades / total_trades * 100) if total_trades > 0 else 0, 1),
         'open_trades': len([t for t in trades if t['status'] == 'OPEN']),
         'pending_orders': len([o for o in legacy_manager.pending_orders if o['status'] == 'PENDING'])
+    })
+
+@app.route('/reconnect_mt5', methods=['POST'])
+def reconnect_mt5():
+    """محاولة إعادة الاتصال بـ MT5"""
+    global mt5_connected
+    mt5_connected = initialize_mt5()
+    return jsonify({
+        'status': 'success',
+        'mt5_connected': mt5_connected,
+        'message': 'MT5 reconnected' if mt5_connected else 'MT5 connection failed'
     })
 
 # =============================================
