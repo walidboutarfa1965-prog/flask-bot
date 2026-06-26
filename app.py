@@ -23,9 +23,13 @@ except ImportError:
         print("⚠️ MT5 غير مثبت - سيتم استخدام بيانات وهمية")
 
 # استيراد الاستراتيجية الجديدة
-from strategy import SmartTradingBot
-from analysis import *
-from risk_manager import TradeManager
+try:
+    from strategy import SmartTradingBot
+    from analysis import *
+    from risk_manager import TradeManager
+except ImportError as e:
+    print(f"⚠️ خطأ في استيراد الملفات: {e}")
+    print("تأكد من وجود analysis.py, risk_manager.py, strategy.py في نفس المجلد")
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -35,7 +39,11 @@ app = Flask(__name__)
 # =============================================
 # تهيئة البوت الجديد
 # =============================================
-smart_bot = SmartTradingBot(initial_balance=10000)
+try:
+    smart_bot = SmartTradingBot(initial_balance=10000)
+except NameError:
+    print("⚠️ SmartTradingBot غير معرف - تأكد من وجود strategy.py")
+    smart_bot = None
 
 # =============================================
 # 1. Bot Settings (Exness Only)
@@ -47,7 +55,7 @@ MT5_SERVER = 'Exness-MT5Trial16'
 client = None
 
 # =============================================
-# 2. Investing.com Functions (Improved)
+# 2. Investing.com Functions
 # =============================================
 
 def get_investing_id(symbol, asset_type="Currency"):
@@ -156,7 +164,7 @@ def get_investing_price(symbol):
         return None
 
 # =============================================
-# 3. Bot Data (موجود)
+# 3. Bot Data
 # =============================================
 trades = []
 active_positions = []
@@ -189,7 +197,7 @@ bot_settings = {
 }
 
 # =============================================
-# 4. Trade Manager (موجود)
+# 4. Trade Manager (Legacy)
 # =============================================
 
 class LegacyTradeManager:
@@ -271,7 +279,7 @@ class LegacyTradeManager:
 legacy_manager = LegacyTradeManager()
 
 # =============================================
-# 5. Market Analysis (مدمج مع الاستراتيجية الجديدة)
+# 5. Market Analysis
 # =============================================
 
 def get_klines(symbol, interval, limit=100):
@@ -339,43 +347,56 @@ def analyze_market_full(symbol):
     
     # محاولة استخدام الاستراتيجية الجديدة
     try:
-        # جلب البيانات
-        data_h4 = get_klines(symbol, '4h', 100)
-        data_h1 = get_klines(symbol, '1h', 100)
-        data_m15 = get_klines(symbol, '15m', 100)
-        
-        if data_h4 is not None and data_h1 is not None and data_m15 is not None:
-            # استخدام البوت الجديد
-            decision = smart_bot.get_trading_decision(data_h4, data_h1, data_m15)
+        if smart_bot is not None:
+            # جلب البيانات
+            data_h4 = get_klines(symbol, '4h', 100)
+            data_h1 = get_klines(symbol, '1h', 100)
+            data_m15 = get_klines(symbol, '15m', 100)
             
-            if decision['decision'] == 'BUY':
-                result['signal'] = 'BUY'
-                result['entry_price'] = decision['entry']
-                result['stop_loss'] = decision['stop']
-                result['take_profit'] = decision['entry'] + (decision['entry'] - decision['stop']) * 2
-                result['confidence'] = decision['trigger']['conditions_met'] / 9
-                result['trend'] = decision['trend']['direction']
-                result['reason'] = f"SMC+ICT: {decision['trigger']['conditions_met']}/9 شروط متحققة"
-            elif decision['decision'] == 'SELL':
-                result['signal'] = 'SELL'
-                result['entry_price'] = decision['entry']
-                result['stop_loss'] = decision['stop']
-                result['take_profit'] = decision['entry'] - (decision['stop'] - decision['entry']) * 2
-                result['confidence'] = decision['trigger']['conditions_met'] / 9
-                result['trend'] = decision['trend']['direction']
-                result['reason'] = f"SMC+ICT: {decision['trigger']['conditions_met']}/9 شروط متحققة"
+            if data_h4 is not None and data_h1 is not None and data_m15 is not None:
+                # استخدام البوت الجديد
+                decision = smart_bot.get_trading_decision(data_h4, data_h1, data_m15)
+                
+                if decision['decision'] == 'BUY':
+                    result['signal'] = 'BUY'
+                    result['entry_price'] = decision['entry']
+                    result['stop_loss'] = decision['stop']
+                    result['take_profit'] = decision['entry'] + (decision['entry'] - decision['stop']) * 2
+                    result['confidence'] = decision['trigger']['conditions_met'] / 9
+                    result['trend'] = decision['trend']['direction']
+                    result['reason'] = f"SMC+ICT: {decision['trigger']['conditions_met']}/9 شروط متحققة"
+                elif decision['decision'] == 'SELL':
+                    result['signal'] = 'SELL'
+                    result['entry_price'] = decision['entry']
+                    result['stop_loss'] = decision['stop']
+                    result['take_profit'] = decision['entry'] - (decision['stop'] - decision['entry']) * 2
+                    result['confidence'] = decision['trigger']['conditions_met'] / 9
+                    result['trend'] = decision['trend']['direction']
+                    result['reason'] = f"SMC+ICT: {decision['trigger']['conditions_met']}/9 شروط متحققة"
+                else:
+                    result['signal'] = 'NEUTRAL'
+                    result['reason'] = f"انتظار: {decision.get('reason', 'لا توجد إشارة')}"
             else:
-                result['signal'] = 'NEUTRAL'
-                result['reason'] = f"انتظار: {decision.get('reason', 'لا توجد إشارة')}"
+                # استخدام التحليل التقليدي كبديل
+                data = get_klines(symbol, '1h', 100)
+                if data is not None:
+                    trend = identify_trend(data)
+                    result['trend'] = trend['trend']
+                    result['trend_strength'] = trend['strength']
+                    result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
+                    result['confidence'] = trend['strength']
+                    result['reason'] = f"تحليل تقليدي: {trend['trend']}"
         else:
-            # استخدام التحليل التقليدي كبديل
-            trend = identify_trend(data_h4)
-            result['trend'] = trend['trend']
-            result['trend_strength'] = trend['strength']
-            result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
-            result['confidence'] = trend['strength']
-            result['reason'] = f"تحليل تقليدي: {trend['trend']}"
-            
+            # استخدام التحليل التقليدي
+            data = get_klines(symbol, '1h', 100)
+            if data is not None:
+                trend = identify_trend(data)
+                result['trend'] = trend['trend']
+                result['trend_strength'] = trend['strength']
+                result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
+                result['confidence'] = trend['strength']
+                result['reason'] = f"تحليل تقليدي: {trend['trend']}"
+                
     except Exception as e:
         logging.error(f"❌ تحليل السوق فشل: {e}")
         result['reason'] = f"خطأ: {str(e)[:50]}"
@@ -387,6 +408,7 @@ def analyze_market_full(symbol):
 # =============================================
 
 def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=None):
+    global total_trades
     if not bot_running:
         return {'error': 'Bot is stopped'}
     if quantity is None:
@@ -414,6 +436,7 @@ def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=
     }
     trades.append(trade)
     legacy_manager.open_trades.append(trade)
+    total_trades += 1
     if bot_settings['pending_orders']:
         pending = legacy_manager.place_pending_order(
             symbol, 
@@ -425,6 +448,7 @@ def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=
     return trade
 
 def trading_loop():
+    global winning_trades
     while True:
         if not bot_running:
             time.sleep(5)
@@ -690,4 +714,97 @@ def index():
     balance = 10000
     open_positions = [t for t in trades if t['status'] == 'OPEN']
     pending_orders_list = [o for o in legacy_manager.pending_orders if o['status'] == 'PENDING']
-    win_rate = round((winning_trades / total_trades * 100) if total_trades > 
+    
+    # حساب نسبة الفوز - التصحيح هنا
+    if total_trades > 0:
+        win_rate = round((winning_trades / total_trades * 100), 1)
+    else:
+        win_rate = 0.0
+    
+    analysis = analyze_market_full('BTCUSDT')
+    
+    investing_connected = check_investing_connection()
+    news = fetch_news_investiny() if investing_connected else []
+    news_risk = get_news_risk() if investing_connected else 0
+    
+    return render_template_string(
+        HTML_TEMPLATE,
+        balance=f"{balance:.2f} USDT",
+        open_trades=len(open_positions),
+        pending_count=len(pending_orders_list),
+        win_rate=win_rate,
+        open_positions=open_positions,
+        pending_orders=pending_orders_list,
+        trades_history=[t for t in trades if t['status'] == 'CLOSED'][-10:],
+        last_update=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        risk_percent=bot_settings['risk_percent'],
+        stop_loss_percent=bot_settings['stop_loss_percent'],
+        take_profit_percent=bot_settings['take_profit_percent'],
+        trailing_stop_percent=bot_settings['trailing_stop_percent'],
+        confirmation=bot_settings['confirmation_candles'],
+        bot_running=bot_running,
+        analysis_trend=analysis['trend'],
+        analysis_signal=analysis['signal'],
+        analysis_confidence=round(analysis['confidence'] * 100, 1),
+        analysis_reason=analysis['reason'],
+        investing_connected=investing_connected,
+        news=news,
+        news_risk=news_risk,
+        mt5_available=mt5 is not None
+    )
+
+@app.route('/toggle_bot', methods=['POST'])
+def toggle_bot():
+    global bot_running
+    bot_running = not bot_running
+    return index()
+
+@app.route('/update_risk', methods=['POST'])
+def update_risk():
+    global bot_settings
+    bot_settings['risk_percent'] = float(request.form.get('risk_percent', 2.0))
+    bot_settings['stop_loss_percent'] = float(request.form.get('stop_loss_percent', 2.0))
+    bot_settings['take_profit_percent'] = float(request.form.get('take_profit_percent', 4.0))
+    bot_settings['trailing_stop_percent'] = float(request.form.get('trailing_stop_percent', 1.5))
+    bot_settings['confirmation_candles'] = int(request.form.get('confirmation', 2))
+    return index()
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if not bot_running:
+        return jsonify({"status": "error", "message": "Bot is stopped"}), 400
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol', 'BTCUSDT')
+        action = data.get('action')
+        analysis = analyze_market_full(symbol)
+        if analysis['signal'] != action:
+            return jsonify({'status': 'blocked', 'reason': f'Signal mismatch: {analysis["signal"]} != {action}'}), 200
+        trade = execute_trade(symbol, action, analysis['entry_price'], analysis['stop_loss'], analysis['take_profit'])
+        return jsonify({'status': 'success', 'trade': trade})
+    except Exception as e:
+        logging.error(f"❌ Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+@app.route('/status')
+def status():
+    """الحصول على حالة البوت"""
+    return jsonify({
+        'bot_running': bot_running,
+        'total_trades': total_trades,
+        'winning_trades': winning_trades,
+        'win_rate': round((winning_trades / total_trades * 100) if total_trades > 0 else 0, 1),
+        'open_trades': len([t for t in trades if t['status'] == 'OPEN']),
+        'pending_orders': len([o for o in legacy_manager.pending_orders if o['status'] == 'PENDING'])
+    })
+
+# =============================================
+# 9. Run Server
+# =============================================
+
+if __name__ == '__main__':
+    # بدء حلقة التداول في خلفية
+    thread = threading.Thread(target=trading_loop, daemon=True)
+    thread.start()
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
