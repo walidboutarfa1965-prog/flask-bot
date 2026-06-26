@@ -1,32 +1,4 @@
-"""
-====================================================================
-🤖 SMART TRADING BOT - الكود النهائي الجاهز للتشغيل
-====================================================================
-
-📌 هذا الكود يقوم بـ:
-   1. الاتصال بـ MetaTrader 5 (حساب ديمو Exness)
-   2. تحليل السوق باستخدام استراتيجية SMC + ICT + Volume Profile
-   3. تنفيذ صفقات شراء وبيع تلقائية
-   4. إدارة المخاطر (وقف الخسارة، جني الأرباح، التريلينج ستوب)
-   5. عرض لوحة تحكم على الويب
-
-🔧 بيانات الحساب (عدلها هنا في الأسفل):
-   - MT5_LOGIN    : رقم حساب الديمو
-   - MT5_PASSWORD : كلمة المرور
-   - MT5_SERVER   : اسم الخادم
-
-🚀 كيفية التشغيل:
-   python app.py
-
-====================================================================
-"""
-
-# ====================================================================
-# 0. استيراد المكتبات
-# ====================================================================
-
 from flask import Flask, render_template_string, jsonify, request
-import json
 import os
 import time
 import threading
@@ -38,686 +10,661 @@ from dotenv import load_dotenv
 import requests
 import feedparser
 
-# ====================================================================
-# 1. بيانات حساب Exness (DEMO) - 👈 عدّل هنا
-# ====================================================================
+# ============================================================
+# 📦 استيراد MetaTrader5
+# ============================================================
 
-# ═══════════════════════════════════════════════════════════════════
-#  🔑 أدخل بيانات حساب الديمو الخاص بك هنا:
-# ═══════════════════════════════════════════════════════════════════
-
-MT5_LOGIN = 262946340          # ← رقم حساب الديمو
-MT5_PASSWORD = "Mama1965."     # ← كلمة المرور
-MT5_SERVER = "Exness-MT5Trial16"  # ← اسم الخادم
-
-# ═══════════════════════════════════════════════════════════════════
-
-# ====================================================================
-# 2. تحميل متغيرات البيئة (اختياري)
-# ====================================================================
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+    print("✅ تم استيراد MetaTrader5 بنجاح")
+except ImportError:
+    MT5_AVAILABLE = False
+    print("❌ MetaTrader5 غير مثبت")
+    mt5 = None
 
 load_dotenv()
-
-# إذا كانت هناك متغيرات بيئية، استخدمها بدلاً من القيم الثابتة
-MT5_LOGIN = int(os.getenv('MT5_LOGIN', MT5_LOGIN))
-MT5_PASSWORD = os.getenv('MT5_PASSWORD', MT5_PASSWORD)
-MT5_SERVER = os.getenv('MT5_SERVER', MT5_SERVER)
-
-# ====================================================================
-# 3. إعداد التسجيل (Logging)
-# ====================================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-print("=" * 70)
-print("🤖 SMART TRADING BOT - بدء التشغيل")
-print("=" * 70)
-print(f"📌 حساب الديمو: {MT5_LOGIN}")
-print(f"📌 الخادم: {MT5_SERVER}")
-print("=" * 70)
-
-# ====================================================================
-# 4. تهيئة Flask
-# ====================================================================
 
 app = Flask(__name__)
 
-# ====================================================================
-# 5. تهيئة MetaTrader 5
-# ====================================================================
+# ============================================================
+# 🔑 بيانات الاتصال - 👈 عدّل هنا
+# ============================================================
+
+MT5_ACCOUNT = 262946340
+MT5_PASSWORD = "Mama1965."
+MT5_SERVER = "Exness-MT5Trial16"
+
+# ============================================================
+# 🔗 حالة الاتصالات
+# ============================================================
 
 mt5_connected = False
-mt5 = None
+investing_connected = False
+exness_connected = False
 
-def initialize_mt5():
-    global mt5, mt5_connected
+account_balance = 0.0
+account_equity = 0.0
+open_positions = []
+trade_history_list = []
+
+# ============================================================
+# 🔌 دوال الاتصال
+# ============================================================
+
+def connect_mt5():
+    """الاتصال بـ MetaTrader 5"""
+    global mt5_connected, exness_connected, account_balance, account_equity, open_positions, trade_history_list
     
-    print("\n🔍 محاولة الاتصال بـ MetaTrader 5...")
-    print(f"   📌 Login: {MT5_LOGIN}")
-    print(f"   📌 Server: {MT5_SERVER}")
+    if not MT5_AVAILABLE:
+        mt5_connected = False
+        exness_connected = False
+        return False
     
     try:
-        try:
-            import MetaTrader5 as mt5_module
-            mt5 = mt5_module
-            print("✅ تم استيراد MetaTrader5 بنجاح")
-        except ImportError:
-            try:
-                import mt5linux as mt5_module
-                mt5 = mt5_module
-                print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
-            except ImportError:
-                mt5 = None
-                print("❌ MT5 غير مثبت - سيتم استخدام بيانات وهمية")
-                return False
+        # إنهاء أي اتصال سابق
+        mt5.shutdown()
+        time.sleep(1)
         
-        if mt5 is None:
-            return False
-        
-        initialized = mt5.initialize(
-            login=MT5_LOGIN,
-            password=MT5_PASSWORD,
-            server=MT5_SERVER
-        )
-        
-        if initialized:
-            mt5_connected = True
-            print("✅ تم الاتصال بـ MT5 بنجاح! 🎉")
-            
-            account_info = mt5.account_info()
-            if account_info:
-                print(f"   📊 الحساب: {account_info.login}")
-                print(f"   💰 الرصيد: {account_info.balance:.2f} USD")
-                print(f"   📈 Equity: {account_info.equity:.2f} USD")
-            return True
-        else:
-            error = mt5.last_error()
-            print(f"❌ فشل الاتصال بـ MT5: {error}")
+        # تهيئة الاتصال
+        if not mt5.initialize():
+            logger.error(f"❌ فشل تهيئة MT5: {mt5.last_error()}")
             mt5_connected = False
+            exness_connected = False
             return False
-            
+        
+        # تسجيل الدخول
+        if not mt5.login(MT5_ACCOUNT, password=MT5_PASSWORD, server=MT5_SERVER):
+            logger.error(f"❌ فشل تسجيل الدخول: {mt5.last_error()}")
+            mt5_connected = False
+            exness_connected = False
+            return False
+        
+        mt5_connected = True
+        exness_connected = True
+        logger.info("✅ تم الاتصال بـ MT5 و Exness بنجاح!")
+        
+        # جلب معلومات الحساب
+        account_info = mt5.account_info()
+        if account_info:
+            account_balance = account_info.balance
+            account_equity = account_info.equity
+            logger.info(f"💰 الرصيد: {account_balance:.2f} | Equity: {account_equity:.2f}")
+        
+        # جلب الصفقات المفتوحة
+        update_positions()
+        update_history()
+        
+        return True
+        
     except Exception as e:
-        print(f"❌ خطأ في الاتصال بـ MT5: {e}")
+        logger.error(f"❌ خطأ في الاتصال: {e}")
         mt5_connected = False
+        exness_connected = False
         return False
 
-mt5_connected = initialize_mt5()
+def update_positions():
+    """تحديث الصفقات المفتوحة"""
+    global open_positions
+    open_positions = []
+    if mt5_connected:
+        try:
+            positions = mt5.positions_get()
+            if positions:
+                for pos in positions:
+                    open_positions.append({
+                        'symbol': pos.symbol,
+                        'type': 'BUY' if pos.type == 0 else 'SELL',
+                        'entry_price': pos.price_open,
+                        'current_price': pos.price_current,
+                        'profit': pos.profit,
+                        'volume': pos.volume,
+                        'stop_loss': pos.sl,
+                        'take_profit': pos.tp,
+                    })
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب الصفقات: {e}")
 
-# ====================================================================
-# 6. استيراد الاستراتيجية
-# ====================================================================
+def update_history():
+    """تحديث سجل الصفقات"""
+    global trade_history_list
+    trade_history_list = []
+    if mt5_connected:
+        try:
+            from_date = datetime.now() - timedelta(days=30)
+            deals = mt5.history_deals_get(from_date, datetime.now())
+            if deals:
+                for deal in deals[-20:]:
+                    trade_history_list.append({
+                        'time': datetime.fromtimestamp(deal.time).strftime('%Y-%m-%d %H:%M'),
+                        'symbol': deal.symbol,
+                        'type': 'BUY' if deal.type == 0 else 'SELL',
+                        'price': deal.price,
+                        'volume': deal.volume,
+                        'profit': deal.profit,
+                    })
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب السجل: {e}")
 
-print("\n📂 استيراد ملفات الاستراتيجية...")
-
-try:
-    from strategy import SmartTradingBot
-    from analysis import *
-    from risk_manager import TradeManager
-    print("✅ تم استيراد ملفات الاستراتيجية بنجاح")
-except ImportError as e:
-    print(f"⚠️ خطأ في استيراد الملفات: {e}")
-    SmartTradingBot = None
-    TradeManager = None
-
-# ====================================================================
-# 7. تهيئة البوت
-# ====================================================================
-
-print("\n🤖 تهيئة البوت...")
-
-try:
-    if SmartTradingBot is not None:
-        smart_bot = SmartTradingBot(initial_balance=10000)
-        print("✅ تم تهيئة SmartTradingBot بنجاح")
-    else:
-        smart_bot = None
-        print("⚠️ SmartTradingBot غير معرف")
-except NameError:
-    print("⚠️ SmartTradingBot غير معرف")
-    smart_bot = None
-
-print("=" * 70)
-print("✅ جاهز للتشغيل!")
-print("=" * 70)
-
-# ====================================================================
-# 8. إعدادات البوت
-# ====================================================================
-
-trades = []
-total_trades = 0
-winning_trades = 0
-bot_running = True
-
-bot_settings = {
-    'default_quantity': 0.01,
-    'max_trades': 5,
-    'symbols': ['BTCUSDT', 'ETHUSDT', 'XAUUSD', 'EURUSD'],
-    'risk_percent': 2.0,
-    'stop_loss_percent': 2.0,
-    'take_profit_percent': 4.0,
-    'trailing_stop_percent': 1.5,
-    'auto_lot': True,
-    'broker_name': 'Exness',
-    'use_ai': True,
-    'use_mtf': True,
-    'news_filter': True,
-    'pending_orders': True,
-    'timeframes': {
-        'trend': '1d',
-        'structure': '1h',
-        'entry': '15m'
-    },
-    'confirmation_candles': 2,
-    'min_trend_strength': 0.6,
-}
-
-# ====================================================================
-# 9. إدارة الصفقات
-# ====================================================================
-
-class LegacyTradeManager:
-    def __init__(self):
-        self.open_trades = []
-        self.closed_trades = []
-        self.pending_orders = []
-        self.trailing_stops = {}
-    
-    def place_pending_order(self, symbol, order_type, price, stop_loss, take_profit, quantity):
-        order = {
-            'id': len(self.pending_orders) + 1,
-            'symbol': symbol,
-            'type': order_type,
-            'price': price,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'quantity': quantity,
-            'status': 'PENDING',
-            'created_at': datetime.now().isoformat(),
-            'triggered': False
-        }
-        self.pending_orders.append(order)
-        return order
-    
-    def check_pending_orders(self, current_price):
-        triggered = []
-        for order in self.pending_orders:
-            if order['status'] != 'PENDING':
-                continue
-            should_trigger = False
-            if order['type'] in ['BUY_LIMIT', 'BUY_STOP']:
-                if order['type'] == 'BUY_LIMIT' and current_price <= order['price']:
-                    should_trigger = True
-                elif order['type'] == 'BUY_STOP' and current_price >= order['price']:
-                    should_trigger = True
-            else:
-                if order['type'] == 'SELL_LIMIT' and current_price >= order['price']:
-                    should_trigger = True
-                elif order['type'] == 'SELL_STOP' and current_price <= order['price']:
-                    should_trigger = True
-            if should_trigger:
-                order['status'] = 'TRIGGERED'
-                order['triggered_at'] = datetime.now().isoformat()
-                triggered.append(order)
-        return triggered
-    
-    def update_trailing_stop(self, position, current_price):
-        if position['id'] not in self.trailing_stops:
-            self.trailing_stops[position['id']] = position['stop_loss']
-        current_stop = self.trailing_stops[position['id']]
-        if position['type'] == 'BUY':
-            new_stop = current_price * (1 - bot_settings['trailing_stop_percent'] / 100)
-            if new_stop > current_stop:
-                self.trailing_stops[position['id']] = new_stop
-                return new_stop
-        else:
-            new_stop = current_price * (1 + bot_settings['trailing_stop_percent'] / 100)
-            if new_stop < current_stop:
-                self.trailing_stops[position['id']] = new_stop
-                return new_stop
-        return current_stop
-    
-    def close_position(self, position_id, exit_price, reason='MANUAL'):
-        for pos in self.open_trades:
-            if pos['id'] == position_id:
-                pos['exit_price'] = exit_price
-                pos['exit_time'] = datetime.now().isoformat()
-                pos['status'] = 'CLOSED'
-                pos['reason'] = reason
-                pos['profit'] = (exit_price - pos['entry_price']) * pos['quantity']
-                if pos['type'] == 'SELL':
-                    pos['profit'] = -pos['profit']
-                self.closed_trades.append(pos)
-                self.open_trades.remove(pos)
-                return pos
-        return None
-
-legacy_manager = LegacyTradeManager()
-
-# ====================================================================
-# 10. دوال Investing.com
-# ====================================================================
-
-def check_investing_connection():
+def check_investing():
+    """التحقق من اتصال Investing.com"""
+    global investing_connected
     try:
         url = 'https://www.investing.com/rss/news_14.rss'
         response = requests.get(url, timeout=5)
-        return response.status_code == 200
+        investing_connected = response.status_code == 200
+        if investing_connected:
+            logger.info("✅ Investing.com متصل")
+        else:
+            logger.warning("⚠️ Investing.com غير متصل")
     except:
-        return False
+        investing_connected = False
+        logger.warning("⚠️ Investing.com غير متصل")
 
-def fetch_news_investiny():
+def fetch_news():
+    """جلب الأخبار من Investing.com"""
     try:
         url = 'https://www.investing.com/rss/news_14.rss'
         feed = feedparser.parse(url)
-        if feed.entries:
-            news = []
-            for entry in feed.entries[:5]:
-                news.append({
-                    'title': entry.title,
-                    'date': entry.get('published', ''),
-                    'impact': 'low'
-                })
-            return news
-        return []
+        news = []
+        for entry in feed.entries[:5]:
+            news.append({
+                'title': entry.title,
+                'date': entry.get('published', datetime.now().strftime('%Y-%m-%d %H:%M')),
+            })
+        return news
     except:
-        return []
+        return [{'title': 'تعذر جلب الأخبار', 'date': datetime.now().strftime('%Y-%m-%d %H:%M')}]
 
-def get_news_risk():
-    return 0
+# ============================================================
+# 📊 تحليل السوق (بيانات حقيقية)
+# ============================================================
 
-# ====================================================================
-# 11. تحليل السوق
-# ====================================================================
-
-def get_klines(symbol, interval, limit=100):
-    global mt5_connected, mt5
-    
-    if mt5_connected and mt5 is not None:
-        try:
-            timeframe_map = {
-                '1m': mt5.TIMEFRAME_M1,
-                '5m': mt5.TIMEFRAME_M5,
-                '15m': mt5.TIMEFRAME_M15,
-                '1h': mt5.TIMEFRAME_H1,
-                '4h': mt5.TIMEFRAME_H4,
-                '1d': mt5.TIMEFRAME_D1,
-            }
-            tf = timeframe_map.get(interval, mt5.TIMEFRAME_H1)
-            rates = mt5.copy_rates_from_pos(symbol, tf, 0, limit)
-            
-            if rates is not None and len(rates) > 0:
-                df = pd.DataFrame(rates)
-                df['time'] = pd.to_datetime(df['time'], unit='s')
-                df.set_index('time', inplace=True)
-                return df
-            return None
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب البيانات: {e}")
-            return None
-    
-    # بيانات وهمية
-    try:
-        np.random.seed(42)
-        dates = pd.date_range(start=datetime.now() - timedelta(hours=limit), periods=limit, freq='1h')
-        base_price = 1.2000 if 'USD' in symbol else 100.0
-        prices = base_price + np.cumsum(np.random.randn(limit) * 0.001)
-        df = pd.DataFrame({
-            'open': prices,
-            'high': prices + np.abs(np.random.randn(limit) * 0.001),
-            'low': prices - np.abs(np.random.randn(limit) * 0.001),
-            'close': prices,
-            'volume': np.random.randint(1000, 5000, limit)
-        }, index=dates)
-        return df
-    except:
-        return None
-
-def identify_trend(df):
-    if df is None or len(df) < 50:
-        return {'trend': 'Sideways', 'strength': 0.0}
-    ema_50 = df['close'].ewm(span=50, adjust=False).mean()
-    ema_200 = df['close'].ewm(span=200, adjust=False).mean()
-    last = df['close'].iloc[-1]
-    if last > ema_50.iloc[-1] > ema_200.iloc[-1]:
-        return {'trend': 'Uptrend', 'strength': 0.7}
-    elif last < ema_50.iloc[-1] < ema_200.iloc[-1]:
-        return {'trend': 'Downtrend', 'strength': 0.7}
-    return {'trend': 'Sideways', 'strength': 0.0}
-
-def analyze_market_full(symbol):
-    result = {
-        'symbol': symbol,
-        'trend': 'Sideways',
-        'signal': 'NEUTRAL',
-        'confidence': 0.0,
-        'entry_price': None,
-        'stop_loss': None,
-        'take_profit': None,
-        'reason': ''
-    }
-    
+def get_market_analysis():
+    """تحليل السوق باستخدام بيانات MT5"""
     if not mt5_connected:
-        result['reason'] = "⚠️ MT5 غير متصل - بيانات وهمية"
-        data = get_klines(symbol, '1h', 100)
-        if data is not None:
-            trend = identify_trend(data)
-            result['trend'] = trend['trend']
-            result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
-            result['confidence'] = trend['strength']
-            result['reason'] = f"تحليل مبسط: {trend['trend']}"
-        return result
+        return {
+            'trend': 'غير متصل',
+            'signal': 'NEUTRAL',
+            'confidence': 0,
+            'reason': 'MT5 غير متصل'
+        }
     
     try:
-        if smart_bot is not None:
-            data_h4 = get_klines(symbol, '4h', 100)
-            data_h1 = get_klines(symbol, '1h', 100)
-            data_m15 = get_klines(symbol, '15m', 100)
-            
-            if data_h4 is not None and data_h1 is not None and data_m15 is not None:
-                decision = smart_bot.get_trading_decision(data_h4, data_h1, data_m15)
-                if decision['decision'] == 'BUY':
-                    result['signal'] = 'BUY'
-                    result['entry_price'] = decision['entry']
-                    result['stop_loss'] = decision['stop']
-                    result['take_profit'] = decision['entry'] + (decision['entry'] - decision['stop']) * 2
-                    result['confidence'] = 0.7
-                    result['trend'] = decision['trend']['direction']
-                    result['reason'] = "SMC+ICT: إشارة شراء"
-                elif decision['decision'] == 'SELL':
-                    result['signal'] = 'SELL'
-                    result['entry_price'] = decision['entry']
-                    result['stop_loss'] = decision['stop']
-                    result['take_profit'] = decision['entry'] - (decision['stop'] - decision['entry']) * 2
-                    result['confidence'] = 0.7
-                    result['trend'] = decision['trend']['direction']
-                    result['reason'] = "SMC+ICT: إشارة بيع"
-                else:
-                    result['signal'] = 'NEUTRAL'
-                    result['reason'] = f"انتظار: {decision.get('reason', 'لا توجد إشارة')}"
-            else:
-                data = get_klines(symbol, '1h', 100)
-                if data is not None:
-                    trend = identify_trend(data)
-                    result['trend'] = trend['trend']
-                    result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
-                    result['confidence'] = trend['strength']
-                    result['reason'] = f"تحليل تقليدي: {trend['trend']}"
+        rates = mt5.copy_rates_from_pos("EURUSD", mt5.TIMEFRAME_H1, 0, 100)
+        if rates is None or len(rates) < 50:
+            return {'trend': 'Sideways', 'signal': 'NEUTRAL', 'confidence': 0, 'reason': 'بيانات غير كافية'}
+        
+        df = pd.DataFrame(rates)
+        close = df['close']
+        ema_50 = close.ewm(span=50).mean().iloc[-1]
+        ema_200 = close.ewm(span=200).mean().iloc[-1]
+        last = close.iloc[-1]
+        
+        if last > ema_50 > ema_200:
+            return {'trend': 'Uptrend', 'signal': 'BUY', 'confidence': 70, 'reason': 'اتجاه صاعد قوي'}
+        elif last < ema_50 < ema_200:
+            return {'trend': 'Downtrend', 'signal': 'SELL', 'confidence': 70, 'reason': 'اتجاه هابط قوي'}
         else:
-            data = get_klines(symbol, '1h', 100)
-            if data is not None:
-                trend = identify_trend(data)
-                result['trend'] = trend['trend']
-                result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
-                result['confidence'] = trend['strength']
-                result['reason'] = f"تحليل تقليدي: {trend['trend']}"
-    except Exception as e:
-        result['reason'] = f"خطأ: {str(e)[:50]}"
-    
-    return result
-
-# ====================================================================
-# 12. تنفيذ الصفقات
-# ====================================================================
-
-def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=None):
-    global total_trades
-    
-    if not bot_running:
-        return {'error': 'Bot is stopped'}
-    
-    if not mt5_connected:
-        logger.warning("⚠️ MT5 غير متصل - صفقة وهمية")
-        # محاكاة صفقة
-        trade = {
-            'id': len(trades) + 1,
-            'symbol': symbol,
-            'type': action,
-            'entry_price': entry_price,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'quantity': quantity or 0.01,
-            'entry_time': datetime.now().isoformat(),
-            'status': 'OPEN',
-            'profit': None
-        }
-        trades.append(trade)
-        legacy_manager.open_trades.append(trade)
-        total_trades += 1
-        logger.info(f"📊 صفقة وهمية {action}: {symbol} @ {entry_price}")
-        return trade
-    
-    if quantity is None:
-        balance = 10000
-        risk_amount = balance * (bot_settings['risk_percent'] / 100)
-        risk_distance = abs(entry_price - stop_loss)
-        if risk_distance == 0:
-            risk_distance = 0.01
-        quantity = round(risk_amount / risk_distance, 3)
-        if quantity <= 0:
-            quantity = 0.001
-    
-    try:
-        order_type = mt5.ORDER_TYPE_BUY if action == 'BUY' else mt5.ORDER_TYPE_SELL
-        
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": quantity,
-            "type": order_type,
-            "price": entry_price,
-            "sl": stop_loss,
-            "tp": take_profit,
-            "deviation": 20,
-            "magic": 234000,
-            "comment": "Smart Bot",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        
-        result = mt5.order_send(request)
-        
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
-            trade = {
-                'id': len(trades) + 1,
-                'symbol': symbol,
-                'type': action,
-                'entry_price': entry_price,
-                'stop_loss': stop_loss,
-                'take_profit': take_profit,
-                'quantity': quantity,
-                'entry_time': datetime.now().isoformat(),
-                'status': 'OPEN',
-                'profit': None,
-                'order_id': result.order
-            }
-            trades.append(trade)
-            legacy_manager.open_trades.append(trade)
-            total_trades += 1
-            logger.info(f"✅ صفقة {action} تم تنفيذها: {symbol} @ {entry_price}")
-            return trade
-        else:
-            logger.error(f"❌ فشل تنفيذ الصفقة: {result.retcode}")
-            return {'error': f'فشل التنفيذ: {result.retcode}'}
+            return {'trend': 'Sideways', 'signal': 'NEUTRAL', 'confidence': 30, 'reason': 'السوق جانبي'}
             
     except Exception as e:
-        logger.error(f"❌ خطأ في تنفيذ الصفقة: {e}")
-        return {'error': str(e)}
+        return {'trend': 'خطأ', 'signal': 'NEUTRAL', 'confidence': 0, 'reason': str(e)[:50]}
 
-# ====================================================================
-# 13. قالب HTML (مبسط)
-# ====================================================================
+# ============================================================
+# 🎨 واجهة المستخدم
+# ============================================================
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="ar">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🤖 Smart Trading Bot</title>
     <style>
-        * { margin:0; padding:0; box-sizing:border-box; }
-        body { font-family:'Segoe UI',sans-serif; background:#0a0e17; color:#e0e0e0; padding:20px; }
-        .container { max-width:1200px; margin:0 auto; }
-        h1 { text-align:center; color:#00d4ff; margin-bottom:30px; }
-        .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:15px; margin-bottom:20px; }
-        .card { background:#111927; border-radius:12px; padding:20px; border:1px solid #1a2a3a; text-align:center; }
-        .card .label { color:#7a8a9e; font-size:0.8rem; }
-        .card .value { font-size:1.8rem; font-weight:bold; margin-top:10px; }
-        .green { color:#00e676; } .blue { color:#00d4ff; } .gold { color:#ffd700; } .red { color:#ff5252; }
-        .section { background:#111927; border-radius:12px; padding:20px; border:1px solid #1a2a3a; margin-bottom:20px; }
-        .section h2 { color:#00d4ff; margin-bottom:15px; }
-        .badge { background:#00d4ff20; color:#00d4ff; padding:5px 15px; border-radius:20px; border:1px solid #00d4ff40; }
-        .status-online { background:#00e67620; color:#00e676; padding:5px 15px; border-radius:20px; border:1px solid #00e67640; }
-        .status-offline { background:#ff525220; color:#ff5252; padding:5px 15px; border-radius:20px; border:1px solid #ff525240; }
-        .footer { text-align:center; color:#4a5a6e; margin-top:30px; }
-        .btn { padding:10px 25px; border:none; border-radius:8px; font-weight:bold; cursor:pointer; }
-        .btn-start { background:#00e676; color:#0a0e17; }
-        .btn-stop { background:#ff1744; color:#fff; }
-        .btn-primary { background:#00d4ff; color:#0a0e17; }
-        .flex { display:flex; gap:15px; flex-wrap:wrap; align-items:center; }
-        .flex-between { display:flex; justify-content:space-between; flex-wrap:wrap; align-items:center; }
-        .mt-10 { margin-top:10px; }
-        table { width:100%; border-collapse:collapse; }
-        th { text-align:left; padding:8px; color:#7a8a9e; border-bottom:2px solid #1a2a3a; }
-        td { padding:8px; border-bottom:1px solid #1a2a3a; }
-        .buy { color:#00e676; } .sell { color:#ff5252; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0a0e17;
+            color: #e0e0e0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #111927, #0a0e17);
+            padding: 20px 30px;
+            border-radius: 16px;
+            border: 1px solid #1a2a3a;
+            margin-bottom: 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .header h1 { color: #00d4ff; font-size: 28px; font-weight: 700; }
+        .header .badge {
+            background: #00d4ff20;
+            color: #00d4ff;
+            padding: 4px 15px;
+            border-radius: 20px;
+            font-size: 13px;
+            border: 1px solid #00d4ff40;
+        }
+        .header .status-badge {
+            padding: 8px 20px;
+            border-radius: 25px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .status-online { background: #00e67620; color: #00e676; border: 1px solid #00e67640; }
+        .status-offline { background: #ff525220; color: #ff5252; border: 1px solid #ff525240; }
+
+        /* Connections Bar */
+        .connections-bar {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 25px;
+        }
+        .connection-item {
+            background: #111927;
+            padding: 14px 20px;
+            border-radius: 12px;
+            border: 1px solid #1a2a3a;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s;
+        }
+        .connection-item:hover { border-color: #2a3a4a; transform: translateY(-2px); }
+        .connection-item .left { display: flex; align-items: center; gap: 10px; }
+        .connection-item .icon { font-size: 22px; }
+        .connection-item .name { font-weight: 500; color: #e0e0e0; }
+        .status-connected {
+            background: #00e67620;
+            color: #00e676;
+            padding: 4px 12px;
+            border-radius: 15px;
+            border: 1px solid #00e67640;
+        }
+        .status-disconnected {
+            background: #ff525220;
+            color: #ff5252;
+            padding: 4px 12px;
+            border-radius: 15px;
+            border: 1px solid #ff525240;
+        }
+
+        /* Stats */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        .stat-card {
+            background: #111927;
+            padding: 18px 20px;
+            border-radius: 12px;
+            border: 1px solid #1a2a3a;
+            text-align: center;
+        }
+        .stat-card .label { color: #7a8a9e; font-size: 13px; margin-bottom: 6px; }
+        .stat-card .value { font-size: 26px; font-weight: 700; }
+        .value-blue { color: #00d4ff; }
+        .value-green { color: #00e676; }
+        .value-gold { color: #ffd700; }
+        .value-red { color: #ff5252; }
+
+        /* Sections */
+        .section {
+            background: #111927;
+            padding: 20px 25px;
+            border-radius: 12px;
+            border: 1px solid #1a2a3a;
+            margin-bottom: 20px;
+        }
+        .section h2 {
+            color: #00d4ff;
+            font-size: 18px;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .section h2 .badge-sm {
+            font-size: 12px;
+            background: #1a2a3a;
+            padding: 2px 12px;
+            border-radius: 15px;
+            color: #7a8a9e;
+        }
+        .analysis-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        .analysis-item {
+            background: #0d1520;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #1a2a3a;
+        }
+        .analysis-item .label {
+            color: #7a8a9e;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .analysis-item .value {
+            font-size: 18px;
+            font-weight: 600;
+            margin-top: 5px;
+        }
+        .signal-buy { color: #00e676; }
+        .signal-sell { color: #ff5252; }
+        .signal-neutral { color: #ffd700; }
+
+        /* Buttons */
+        .btn {
+            padding: 10px 22px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+        .btn:hover { transform: scale(1.02); opacity: 0.9; }
+        .btn-stop { background: #ff1744; color: #fff; }
+        .btn-start { background: #00e676; color: #0a0e17; }
+        .btn-primary { background: #00d4ff; color: #0a0e17; }
+        .btn-group { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left;
+            padding: 12px;
+            color: #7a8a9e;
+            border-bottom: 2px solid #1a2a3a;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+        td { padding: 12px; border-bottom: 1px solid #1a2a3a; font-size: 14px; }
+        .buy { color: #00e676; }
+        .sell { color: #ff5252; }
+        .profit-positive { color: #00e676; }
+        .profit-negative { color: #ff5252; }
+
+        /* News */
+        .news-item {
+            padding: 12px 15px;
+            border-left: 3px solid #00d4ff;
+            background: #0d1520;
+            margin-bottom: 8px;
+            border-radius: 4px;
+        }
+        .news-item .date { color: #7a8a9e; font-size: 12px; margin-top: 4px; }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            color: #4a5a6e;
+            padding: 20px;
+            border-top: 1px solid #1a2a3a;
+            margin-top: 20px;
+            font-size: 13px;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .header { flex-direction: column; align-items: flex-start; }
+            .connections-bar { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 480px) {
+            .connections-bar { grid-template-columns: 1fr; }
+            .stats { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>🤖 Smart Trading Bot <span class="badge">SMC+ICT</span></h1>
-    
+    <!-- HEADER -->
+    <div class="header">
+        <div>
+            <h1>🤖 Smart Trading Bot</h1>
+            <span class="badge">SMC + ICT</span>
+            <span class="badge" style="background:#00d4ff20;color:#00d4ff;border-color:#00d4ff40;">
+                📊 بيانات حقيقية
+            </span>
+        </div>
+        <div class="btn-group">
+            <span class="status-badge {{ 'status-online' if bot_running else 'status-offline' }}">
+                {{ '🟢 يعمل' if bot_running else '🔴 متوقف' }}
+            </span>
+            <form method="POST" action="/toggle_bot" style="display:inline;">
+                <button type="submit" class="btn {{ 'btn-stop' if bot_running else 'btn-start' }}">
+                    {{ '⏹️ إيقاف' if bot_running else '▶️ تشغيل' }}
+                </button>
+            </form>
+            <a href="/status" class="btn btn-primary" style="text-decoration:none;display:inline-block;">📊 حالة</a>
+            <form method="POST" action="/reconnect" style="display:inline;">
+                <button type="submit" class="btn btn-primary">🔄 إعادة اتصال</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- CONNECTIONS STATUS -->
+    <div class="connections-bar">
+        <div class="connection-item">
+            <div class="left"><span class="icon">🏦</span><span class="name">Exness</span></div>
+            <span class="{{ 'status-connected' if exness_connected else 'status-disconnected' }}">
+                {{ '✅ متصل' if exness_connected else '❌ غير متصل' }}
+            </span>
+        </div>
+        <div class="connection-item">
+            <div class="left"><span class="icon">💻</span><span class="name">MetaTrader 5</span></div>
+            <span class="{{ 'status-connected' if mt5_connected else 'status-disconnected' }}">
+                {{ '✅ متصل' if mt5_connected else '❌ غير متصل' }}
+            </span>
+        </div>
+        <div class="connection-item">
+            <div class="left"><span class="icon">📰</span><span class="name">Investing.com</span></div>
+            <span class="{{ 'status-connected' if investing_connected else 'status-disconnected' }}">
+                {{ '✅ متصل' if investing_connected else '❌ غير متصل' }}
+            </span>
+        </div>
+        <div class="connection-item">
+            <div class="left"><span class="icon">📊</span><span class="name">TradingView</span></div>
+            <span class="status-disconnected">❌ غير متصل</span>
+        </div>
+    </div>
+
+    <!-- STATS -->
+    <div class="stats">
+        <div class="stat-card">
+            <div class="label">💰 الرصيد</div>
+            <div class="value value-blue">{{ "%.2f"|format(balance) }} USDT</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">📈 قيمة المحفظة</div>
+            <div class="value value-gold">{{ "%.2f"|format(equity) }} USDT</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">📊 الصفقات المفتوحة</div>
+            <div class="value value-gold">{{ open_positions_count }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">📰 مخاطر الأخبار</div>
+            <div class="value value-green">0/10</div>
+        </div>
+    </div>
+
+    <!-- MARKET ANALYSIS -->
     <div class="section">
-        <div class="flex-between">
-            <div class="flex">
-                <span class="{{ 'status-online' if bot_running else 'status-offline' }}">
-                    {{ '🟢 Bot Running' if bot_running else '🔴 Bot Stopped' }}
-                </span>
-                <span class="badge">🧠 SMC + ICT</span>
-                <span class="badge" style="background:#00e67620;color:#00e676;">
-                    MT5 {{ '✅ متصل' if mt5_available else '❌ غير متصل' }}
-                </span>
+        <h2>📊 تحليل السوق <span class="badge-sm">بيانات حقيقية من MT5</span></h2>
+        <div class="analysis-grid">
+            <div class="analysis-item">
+                <div class="label">📈 الاتجاه</div>
+                <div class="value">{{ analysis.trend }}</div>
             </div>
-            <div>
-                <form method="POST" action="/toggle_bot" style="display:inline;">
-                    <button type="submit" class="btn {{ 'btn-stop' if bot_running else 'btn-start' }}">
-                        {{ '⏹️ Stop' if bot_running else '▶️ Start' }}
-                    </button>
-                </form>
-                <a href="/status" class="btn btn-primary" style="text-decoration:none;display:inline-block;">📊 Status</a>
+            <div class="analysis-item">
+                <div class="label">🎯 الإشارة</div>
+                <div class="value {{ 'signal-buy' if analysis.signal == 'BUY' else 'signal-sell' if analysis.signal == 'SELL' else 'signal-neutral' }}">
+                    {{ analysis.signal }}
+                </div>
+            </div>
+            <div class="analysis-item">
+                <div class="label">📊 الثقة</div>
+                <div class="value">{{ analysis.confidence }}%</div>
+            </div>
+            <div class="analysis-item">
+                <div class="label">📋 السبب</div>
+                <div class="value" style="font-size:14px;">{{ analysis.reason }}</div>
             </div>
         </div>
     </div>
 
-    <div class="grid">
-        <div class="card"><div class="label">💰 Balance</div><div class="value blue">{{ balance }}</div></div>
-        <div class="card"><div class="label">📈 Open Trades</div><div class="value gold">{{ open_trades }}</div></div>
-        <div class="card"><div class="label">🏆 Win Rate</div><div class="value green">{{ win_rate }}%</div></div>
-        <div class="card"><div class="label">📰 News Risk</div><div class="value green">{{ news_risk }}/10</div></div>
-    </div>
-
+    <!-- NEWS -->
     <div class="section">
-        <h2>📊 Market Analysis</h2>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;">
-            <div><strong>Trend:</strong> {{ analysis_trend }}</div>
-            <div><strong>Signal:</strong> <span class="{{ 'green' if analysis_signal == 'BUY' else 'red' if analysis_signal == 'SELL' else 'gold' }}">{{ analysis_signal }}</span></div>
-            <div><strong>Confidence:</strong> {{ analysis_confidence }}%</div>
-            <div><strong>Reason:</strong> {{ analysis_reason }}</div>
-        </div>
-    </div>
-
-    <div class="section">
-        <h2>📰 Latest News</h2>
+        <h2>📰 آخر الأخبار <span class="badge-sm">Investing.com</span></h2>
         {% for item in news %}
-        <div style="padding:8px 0;border-bottom:1px solid #1a2a3a;">{{ item.title }}</div>
-        {% else %}
-        <div style="color:#4a5a6e;">No news</div>
+        <div class="news-item">
+            <div class="title">{{ item.title }}</div>
+            <div class="date">{{ item.date }}</div>
+        </div>
         {% endfor %}
     </div>
 
+    <!-- OPEN POSITIONS -->
     <div class="section">
-        <h2>📋 Open Trades</h2>
+        <h2>📋 الصفقات المفتوحة</h2>
         <table>
-            <thead><tr><th>Symbol</th><th>Type</th><th>Entry</th><th>Stop Loss</th><th>Take Profit</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>الزوج</th>
+                    <th>النوع</th>
+                    <th>سعر الدخول</th>
+                    <th>السعر الحالي</th>
+                    <th>وقف الخسارة</th>
+                    <th>جني الربح</th>
+                    <th>الربح</th>
+                    <th>الحجم</th>
+                </tr>
+            </thead>
             <tbody>
-                {% for t in open_positions %}
-                <tr><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.stop_loss }}</td><td>{{ t.take_profit }}</td></tr>
+                {% for pos in open_positions %}
+                <tr>
+                    <td>{{ pos.symbol }}</td>
+                    <td class="{{ 'buy' if pos.type == 'BUY' else 'sell' }}">{{ pos.type }}</td>
+                    <td>{{ "%.5f"|format(pos.entry_price) }}</td>
+                    <td>{{ "%.5f"|format(pos.current_price) }}</td>
+                    <td>{{ "%.5f"|format(pos.stop_loss) if pos.stop_loss else '-' }}</td>
+                    <td>{{ "%.5f"|format(pos.take_profit) if pos.take_profit else '-' }}</td>
+                    <td class="{{ 'profit-positive' if pos.profit > 0 else 'profit-negative' }}">{{ "%.2f"|format(pos.profit) }}</td>
+                    <td>{{ pos.volume }}</td>
+                </tr>
                 {% else %}
-                <tr><td colspan="5" style="text-align:center;color:#4a5a6e;">No open trades</td></tr>
+                <tr>
+                    <td colspan="8" style="text-align:center;color:#4a5a6e;">لا توجد صفقات مفتوحة</td>
+                </tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 
+    <!-- TRADE HISTORY -->
     <div class="section">
-        <h2>📋 Trade History</h2>
+        <h2>📋 سجل الصفقات <span class="badge-sm">آخر 20 صفقة</span></h2>
         <table>
-            <thead><tr><th>Time</th><th>Symbol</th><th>Type</th><th>Price</th><th>Status</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>الوقت</th>
+                    <th>الزوج</th>
+                    <th>النوع</th>
+                    <th>السعر</th>
+                    <th>الحجم</th>
+                    <th>الربح</th>
+                </tr>
+            </thead>
             <tbody>
-                {% for t in trades_history %}
-                <tr><td>{{ t.entry_time[:16] }}</td><td>{{ t.symbol }}</td><td class="{{ 'buy' if t.type == 'BUY' else 'sell' }}">{{ t.type }}</td><td>{{ t.entry_price }}</td><td>{{ t.status }}</td></tr>
+                {% for trade in trade_history %}
+                <tr>
+                    <td>{{ trade.time }}</td>
+                    <td>{{ trade.symbol }}</td>
+                    <td class="{{ 'buy' if trade.type == 'BUY' else 'sell' }}">{{ trade.type }}</td>
+                    <td>{{ "%.5f"|format(trade.price) }}</td>
+                    <td>{{ trade.volume }}</td>
+                    <td class="{{ 'profit-positive' if trade.profit > 0 else 'profit-negative' }}">{{ "%.2f"|format(trade.profit) }}</td>
+                </tr>
                 {% else %}
-                <tr><td colspan="5" style="text-align:center;color:#4a5a6e;">No trades</td></tr>
+                <tr>
+                    <td colspan="6" style="text-align:center;color:#4a5a6e;">لا توجد صفقات سابقة</td>
+                </tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 
-    <div class="footer">🚀 Smart Trading Bot | SMC+ICT | Exness Ready</div>
+    <!-- FOOTER -->
+    <div class="footer">
+        🚀 Smart Trading Bot | SMC + ICT | بيانات حقيقية من Exness MT5 | Investing.com
+    </div>
 </div>
 </body>
 </html>
 """
 
-# ====================================================================
-# 14. المسارات (Routes)
-# ====================================================================
+# ============================================================
+# 🚀 المسارات (Routes)
+# ============================================================
+
+bot_running = True
 
 @app.route('/')
 def index():
-    balance = 10000
-    open_positions = [t for t in trades if t['status'] == 'OPEN']
+    """الصفحة الرئيسية"""
+    global account_balance, account_equity, open_positions, trade_history_list
     
-    if total_trades > 0:
-        win_rate = round((winning_trades / total_trades * 100), 1)
-    else:
-        win_rate = 0.0
+    # تحديث البيانات إذا كان MT5 متصلاً
+    if mt5_connected:
+        try:
+            account_info = mt5.account_info()
+            if account_info:
+                account_balance = account_info.balance
+                account_equity = account_info.equity
+            update_positions()
+            update_history()
+        except:
+            pass
     
-    analysis = analyze_market_full('BTCUSDT')
+    # تحليل السوق
+    analysis = get_market_analysis()
     
-    investing_connected = check_investing_connection()
-    news = fetch_news_investiny() if investing_connected else []
-    news_risk = get_news_risk() if investing_connected else 0
+    # جلب الأخبار
+    news = fetch_news()
     
     return render_template_string(
         HTML_TEMPLATE,
-        balance=f"{balance:.2f} USDT",
-        open_trades=len(open_positions),
-        pending_count=0,
-        win_rate=win_rate,
-        open_positions=open_positions,
-        pending_orders=[],
-        trades_history=[t for t in trades if t['status'] == 'CLOSED'][-10:],
-        last_update=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        risk_percent=bot_settings['risk_percent'],
-        stop_loss_percent=bot_settings['stop_loss_percent'],
-        take_profit_percent=bot_settings['take_profit_percent'],
-        trailing_stop_percent=bot_settings['trailing_stop_percent'],
-        confirmation=bot_settings['confirmation_candles'],
-        bot_running=bot_running,
-        analysis_trend=analysis['trend'],
-        analysis_signal=analysis['signal'],
-        analysis_confidence=round(analysis['confidence'] * 100, 1),
-        analysis_reason=analysis['reason'],
+        mt5_connected=mt5_connected,
+        exness_connected=exness_connected,
         investing_connected=investing_connected,
-        news=news,
-        news_risk=news_risk,
-        mt5_available=mt5_connected
+        bot_running=bot_running,
+        balance=account_balance,
+        equity=account_equity,
+        open_positions_count=len(open_positions),
+        open_positions=open_positions,
+        trade_history=trade_history_list,
+        analysis=analysis,
+        news=news
     )
 
 @app.route('/toggle_bot', methods=['POST'])
@@ -726,61 +673,55 @@ def toggle_bot():
     bot_running = not bot_running
     return index()
 
-@app.route('/update_risk', methods=['POST'])
-def update_risk():
-    global bot_settings
-    bot_settings['risk_percent'] = float(request.form.get('risk_percent', 2.0))
-    bot_settings['stop_loss_percent'] = float(request.form.get('stop_loss_percent', 2.0))
-    bot_settings['take_profit_percent'] = float(request.form.get('take_profit_percent', 4.0))
-    bot_settings['trailing_stop_percent'] = float(request.form.get('trailing_stop_percent', 1.5))
-    bot_settings['confirmation_candles'] = int(request.form.get('confirmation', 2))
-    return index()
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    if not bot_running:
-        return jsonify({"status": "error", "message": "Bot is stopped"}), 400
-    try:
-        data = request.get_json()
-        symbol = data.get('symbol', 'BTCUSDT')
-        action = data.get('action')
-        analysis = analyze_market_full(symbol)
-        if analysis['signal'] != action:
-            return jsonify({'status': 'blocked', 'reason': f'Signal mismatch'}), 200
-        trade = execute_trade(symbol, action, analysis['entry_price'], analysis['stop_loss'], analysis['take_profit'])
-        return jsonify({'status': 'success', 'trade': trade})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 400
-
 @app.route('/status')
 def status():
     return jsonify({
-        'bot_running': bot_running,
         'mt5_connected': mt5_connected,
-        'total_trades': total_trades,
-        'open_trades': len([t for t in trades if t['status'] == 'OPEN'])
+        'exness_connected': exness_connected,
+        'investing_connected': investing_connected,
+        'bot_running': bot_running,
+        'balance': account_balance,
+        'equity': account_equity,
+        'open_trades': len(open_positions)
     })
 
-@app.route('/reconnect_mt5', methods=['POST'])
-def reconnect_mt5():
-    global mt5_connected
-    mt5_connected = initialize_mt5()
-    return jsonify({'mt5_connected': mt5_connected})
+@app.route('/reconnect', methods=['POST'])
+def reconnect():
+    """إعادة الاتصال بجميع المنصات"""
+    connect_mt5()
+    check_investing()
+    return index()
 
-# ====================================================================
-# 15. تشغيل الخادم
-# ====================================================================
+# ============================================================
+# 🚀 تشغيل الخادم
+# ============================================================
 
 if __name__ == '__main__':
-    print("\n" + "=" * 70)
-    print("🚀 تشغيل الخادم...")
+    print("=" * 70)
+    print("🚀 SMART TRADING BOT - بيانات حقيقية")
+    print("=" * 70)
+    print(f"📌 حساب Exness: {MT5_ACCOUNT}")
+    print(f"📌 الخادم: {MT5_SERVER}")
     print("=" * 70)
     
-    thread = threading.Thread(target=lambda: None, daemon=True)
-    thread.start()
+    # محاولة الاتصال
+    connect_mt5()
+    check_investing()
+    
+    print("\n📊 حالة الاتصالات:")
+    print(f"   🏦 Exness: {'✅ متصل' if exness_connected else '❌ غير متصل'}")
+    print(f"   💻 MT5: {'✅ متصل' if mt5_connected else '❌ غير متصل'}")
+    print(f"   📰 Investing.com: {'✅ متصل' if investing_connected else '❌ غير متصل'}")
+    
+    if mt5_connected:
+        print(f"\n💰 الرصيد: {account_balance:.2f} USDT")
+        print(f"📈 قيمة المحفظة: {account_equity:.2f} USDT")
+        print(f"📊 الصفقات المفتوحة: {len(open_positions)}")
+    
+    print("=" * 70)
     
     port = int(os.environ.get('PORT', 5000))
     print(f"🌐 الخادم يعمل على: http://localhost:{port}")
-    print("=" * 70 + "\n")
+    print("=" * 70)
     
     app.run(host='0.0.0.0', port=port, debug=False)
