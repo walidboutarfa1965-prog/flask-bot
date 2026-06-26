@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template_string, jsonify, request  # ← أضفت render_template_string هنا
 import json
 import os
 import time
@@ -14,10 +14,26 @@ import feedparser
 # محاولة استيراد MT5
 try:
     import MetaTrader5 as mt5
+    print("✅ MetaTrader5 imported successfully")
 except ImportError:
     try:
         import mt5linux as mt5
         print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
+        # إصلاح مشكلة mt5linux - بعض الإصدارات لا تحتوي على initialize
+        if not hasattr(mt5, 'initialize'):
+            # إنشاء دالة وهمية إذا كانت مفقودة
+            def mock_initialize():
+                print("⚠️ MT5 في وضع المحاكاة (بيانات وهمية)")
+                return True
+            mt5.initialize = mock_initialize
+            mt5.shutdown = lambda: None
+            mt5.copy_rates_from_pos = lambda symbol, tf, pos, count: None
+            mt5.TIMEFRAME_M1 = 1
+            mt5.TIMEFRAME_M5 = 5
+            mt5.TIMEFRAME_M15 = 15
+            mt5.TIMEFRAME_H1 = 60
+            mt5.TIMEFRAME_H4 = 240
+            mt5.TIMEFRAME_D1 = 1440
     except ImportError:
         mt5 = None
         print("⚠️ MT5 غير مثبت - سيتم استخدام بيانات وهمية")
@@ -287,8 +303,10 @@ def get_klines(symbol, interval, limit=100):
     if mt5 is None:
         return None
     try:
-        if not mt5.initialize():
+        # التحقق من وجود initialize
+        if not hasattr(mt5, 'initialize') or mt5.initialize() is None:
             return None
+            
         timeframe_map = {
             '1m': mt5.TIMEFRAME_M1,
             '5m': mt5.TIMEFRAME_M5,
@@ -299,7 +317,8 @@ def get_klines(symbol, interval, limit=100):
         }
         tf = timeframe_map.get(interval, mt5.TIMEFRAME_H1)
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, limit)
-        mt5.shutdown()
+        if hasattr(mt5, 'shutdown'):
+            mt5.shutdown()
         if rates is not None:
             df = pd.DataFrame(rates)
             df['time'] = pd.to_datetime(df['time'], unit='s')
@@ -454,7 +473,6 @@ def trading_loop():
             time.sleep(5)
             continue
         try:
-            # استخدام الاستراتيجية الجديدة
             for symbol in bot_settings['symbols']:
                 analysis = analyze_market_full(symbol)
                 if analysis['signal'] != 'NEUTRAL' and len([t for t in trades if t['status'] == 'OPEN']) < bot_settings['max_trades']:
@@ -480,7 +498,7 @@ def trading_loop():
         time.sleep(10)
 
 # =============================================
-# 7. HTML Template (مختصر للخادم)
+# 7. HTML Template
 # =============================================
 
 HTML_TEMPLATE = """
@@ -653,7 +671,7 @@ def index():
     open_positions = [t for t in trades if t['status'] == 'OPEN']
     pending_orders_list = [o for o in legacy_manager.pending_orders if o['status'] == 'PENDING']
     
-    # حساب نسبة الفوز - التصحيح النهائي
+    # حساب نسبة الفوز
     if total_trades > 0:
         win_rate = round((winning_trades / total_trades * 100), 1)
     else:
