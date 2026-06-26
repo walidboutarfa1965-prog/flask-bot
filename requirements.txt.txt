@@ -1,8 +1,1 @@
-flask
-gunicorn
-python-dotenv
-requests
-feedparser
-pandas
-numpy
-mt5linux
+
