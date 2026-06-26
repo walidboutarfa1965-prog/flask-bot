@@ -1,9 +1,5 @@
-try:
-    import MetaTrader5 as mt5
-except ImportError:
-    import mt5linux as mt5
-    print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
-
+from flask import Flask, render_template, jsonify, request
+import json
 import os
 import time
 import threading
@@ -11,16 +7,35 @@ import logging
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-from flask import Flask, request, jsonify, render_template_string
 from dotenv import load_dotenv
 import requests
 import feedparser
-from investiny import historical_data, search_assets
+
+# محاولة استيراد MT5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    try:
+        import mt5linux as mt5
+        print("⚠️ باستخدام mt5linux (بديل لـ Linux)")
+    except ImportError:
+        mt5 = None
+        print("⚠️ MT5 غير مثبت - سيتم استخدام بيانات وهمية")
+
+# استيراد الاستراتيجية الجديدة
+from strategy import SmartTradingBot
+from analysis import *
+from risk_manager import TradeManager
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
+
+# =============================================
+# تهيئة البوت الجديد
+# =============================================
+smart_bot = SmartTradingBot(initial_balance=10000)
 
 # =============================================
 # 1. Bot Settings (Exness Only)
@@ -37,6 +52,7 @@ client = None
 
 def get_investing_id(symbol, asset_type="Currency"):
     try:
+        from investiny import search_assets
         results = search_assets(query=symbol, limit=1, type=asset_type)
         if results:
             return int(results[0]["ticker"])
@@ -47,6 +63,7 @@ def get_investing_id(symbol, asset_type="Currency"):
 
 def get_investing_data(symbol, from_date="01/01/2024", to_date="01/06/2024"):
     try:
+        from investiny import historical_data
         investing_id = get_investing_id(symbol)
         if not investing_id:
             return None
@@ -63,13 +80,12 @@ def get_investing_data(symbol, from_date="01/01/2024", to_date="01/06/2024"):
 def check_investing_connection():
     """Check if Investing.com API is accessible"""
     try:
-        # Try multiple methods to check connection
+        from investiny import search_assets
         results = search_assets(query="EUR/USD", limit=1, type="Currency")
         if results and len(results) > 0:
             logging.info("✅ Investing.com API is accessible")
             return True
         
-        # Alternative check using RSS
         url = 'https://www.investing.com/rss/news_14.rss'
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
@@ -84,7 +100,6 @@ def check_investing_connection():
 def fetch_news_investiny():
     """Fetch news from Investing.com RSS with fallback"""
     try:
-        # Primary: RSS feed
         url = 'https://www.investing.com/rss/news_14.rss'
         feed = feedparser.parse(url)
         
@@ -104,7 +119,6 @@ def fetch_news_investiny():
             logging.info(f"✅ Fetched {len(news)} news from Investing.com")
             return news
         
-        # Fallback: Alternative RSS
         alt_url = 'https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC'
         alt_feed = feedparser.parse(alt_url)
         if alt_feed.entries:
@@ -142,7 +156,7 @@ def get_investing_price(symbol):
         return None
 
 # =============================================
-# 3. Bot Data
+# 3. Bot Data (موجود)
 # =============================================
 trades = []
 active_positions = []
@@ -175,10 +189,10 @@ bot_settings = {
 }
 
 # =============================================
-# 4. Trade Manager
+# 4. Trade Manager (موجود)
 # =============================================
 
-class TradeManager:
+class LegacyTradeManager:
     def __init__(self):
         self.open_trades = []
         self.closed_trades = []
@@ -254,14 +268,39 @@ class TradeManager:
                 return pos
         return None
 
-trade_manager = TradeManager()
+legacy_manager = LegacyTradeManager()
 
 # =============================================
-# 5. Market Analysis
+# 5. Market Analysis (مدمج مع الاستراتيجية الجديدة)
 # =============================================
 
 def get_klines(symbol, interval, limit=100):
-    return None
+    """جلب البيانات من MT5 أو مصدر آخر"""
+    if mt5 is None:
+        return None
+    try:
+        if not mt5.initialize():
+            return None
+        timeframe_map = {
+            '1m': mt5.TIMEFRAME_M1,
+            '5m': mt5.TIMEFRAME_M5,
+            '15m': mt5.TIMEFRAME_M15,
+            '1h': mt5.TIMEFRAME_H1,
+            '4h': mt5.TIMEFRAME_H4,
+            '1d': mt5.TIMEFRAME_D1,
+        }
+        tf = timeframe_map.get(interval, mt5.TIMEFRAME_H1)
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, limit)
+        mt5.shutdown()
+        if rates is not None:
+            df = pd.DataFrame(rates)
+            df['time'] = pd.to_datetime(df['time'], unit='s')
+            df.set_index('time', inplace=True)
+            return df
+        return None
+    except Exception as e:
+        logging.error(f"❌ Error fetching klines: {e}")
+        return None
 
 def identify_trend(df):
     if df is None or len(df) < 50:
@@ -281,6 +320,7 @@ def identify_trend(df):
     return {'trend': trend, 'strength': min(strength * 10, 1.0)}
 
 def analyze_market_full(symbol):
+    """تحليل السوق باستخدام الاستراتيجية الجديدة"""
     result = {
         'symbol': symbol,
         'trend': 'Sideways',
@@ -296,6 +336,50 @@ def analyze_market_full(symbol):
         'take_profit': None,
         'reason': ''
     }
+    
+    # محاولة استخدام الاستراتيجية الجديدة
+    try:
+        # جلب البيانات
+        data_h4 = get_klines(symbol, '4h', 100)
+        data_h1 = get_klines(symbol, '1h', 100)
+        data_m15 = get_klines(symbol, '15m', 100)
+        
+        if data_h4 is not None and data_h1 is not None and data_m15 is not None:
+            # استخدام البوت الجديد
+            decision = smart_bot.get_trading_decision(data_h4, data_h1, data_m15)
+            
+            if decision['decision'] == 'BUY':
+                result['signal'] = 'BUY'
+                result['entry_price'] = decision['entry']
+                result['stop_loss'] = decision['stop']
+                result['take_profit'] = decision['entry'] + (decision['entry'] - decision['stop']) * 2
+                result['confidence'] = decision['trigger']['conditions_met'] / 9
+                result['trend'] = decision['trend']['direction']
+                result['reason'] = f"SMC+ICT: {decision['trigger']['conditions_met']}/9 شروط متحققة"
+            elif decision['decision'] == 'SELL':
+                result['signal'] = 'SELL'
+                result['entry_price'] = decision['entry']
+                result['stop_loss'] = decision['stop']
+                result['take_profit'] = decision['entry'] - (decision['stop'] - decision['entry']) * 2
+                result['confidence'] = decision['trigger']['conditions_met'] / 9
+                result['trend'] = decision['trend']['direction']
+                result['reason'] = f"SMC+ICT: {decision['trigger']['conditions_met']}/9 شروط متحققة"
+            else:
+                result['signal'] = 'NEUTRAL'
+                result['reason'] = f"انتظار: {decision.get('reason', 'لا توجد إشارة')}"
+        else:
+            # استخدام التحليل التقليدي كبديل
+            trend = identify_trend(data_h4)
+            result['trend'] = trend['trend']
+            result['trend_strength'] = trend['strength']
+            result['signal'] = 'BUY' if trend['trend'] == 'Uptrend' else 'SELL' if trend['trend'] == 'Downtrend' else 'NEUTRAL'
+            result['confidence'] = trend['strength']
+            result['reason'] = f"تحليل تقليدي: {trend['trend']}"
+            
+    except Exception as e:
+        logging.error(f"❌ تحليل السوق فشل: {e}")
+        result['reason'] = f"خطأ: {str(e)[:50]}"
+    
     return result
 
 # =============================================
@@ -325,12 +409,13 @@ def execute_trade(symbol, action, entry_price, stop_loss, take_profit, quantity=
         'entry_time': datetime.now().isoformat(),
         'status': 'OPEN',
         'pending_order': True,
-        'trailing_stop_activated': False
+        'trailing_stop_activated': False,
+        'profit': None
     }
     trades.append(trade)
-    trade_manager.open_trades.append(trade)
+    legacy_manager.open_trades.append(trade)
     if bot_settings['pending_orders']:
-        pending = trade_manager.place_pending_order(
+        pending = legacy_manager.place_pending_order(
             symbol, 
             'BUY_LIMIT' if action == 'BUY' else 'SELL_LIMIT',
             entry_price * 0.99 if action == 'BUY' else entry_price * 1.01,
@@ -345,6 +430,7 @@ def trading_loop():
             time.sleep(5)
             continue
         try:
+            # استخدام الاستراتيجية الجديدة
             for symbol in bot_settings['symbols']:
                 analysis = analyze_market_full(symbol)
                 if analysis['signal'] != 'NEUTRAL' and len([t for t in trades if t['status'] == 'OPEN']) < bot_settings['max_trades']:
@@ -362,14 +448,15 @@ def trading_loop():
                         analysis['stop_loss'],
                         analysis['take_profit']
                     )
-                    logging.info(f"📊 New trade: {trade['symbol']} {trade['type']} at {trade['entry_price']}")
+                    if 'error' not in trade:
+                        logging.info(f"📊 New trade: {trade['symbol']} {trade['type']} at {trade['entry_price']}")
                 time.sleep(1)
         except Exception as e:
             logging.error(f"❌ Trading loop error: {e}")
         time.sleep(10)
 
 # =============================================
-# 7. HTML Template with Investing.com Status
+# 7. HTML Template
 # =============================================
 
 HTML_TEMPLATE = """
@@ -424,11 +511,12 @@ HTML_TEMPLATE = """
         .connection-item .dot { width:12px; height:12px; border-radius:50%; }
         .connection-item .dot.online { background:#00e676; }
         .connection-item .dot.offline { background:#ff5252; }
+        .badge-smc { background:#7c4dff20; color:#7c4dff; padding:2px 10px; border-radius:12px; font-size:0.7rem; border:1px solid #7c4dff40; }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>🤖 Smart Trading Bot</h1>
+    <h1>🤖 Smart Trading Bot <span class="badge-smc">SMC+ICT</span></h1>
     
     <div class="section">
         <div class="flex-between">
@@ -439,6 +527,7 @@ HTML_TEMPLATE = """
                 <span class="status-badge status-online" style="margin-left:10px;">📊 Pending Orders</span>
                 <span class="status-badge status-online" style="margin-left:10px;">🔄 Trailing Stop</span>
                 <span class="status-badge status-online" style="margin-left:10px;">⚠️ Risk {{ risk_percent }}%</span>
+                <span class="badge-smc" style="margin-left:10px;">🧠 SMC + ICT + Volume Profile</span>
             </div>
             <div>
                 <form method="POST" action="/toggle_bot" style="display:inline;">
@@ -446,12 +535,13 @@ HTML_TEMPLATE = """
                         {{ '⏹️ Stop Bot' if bot_running else '▶️ Start Bot' }}
                     </button>
                 </form>
+                <a href="/status" class="btn btn-primary" style="display:inline-block;text-decoration:none;">📊 Status</a>
             </div>
         </div>
         <div class="flex" style="margin-top:10px; gap:10px;">
             <div class="connection-item"><span class="dot online"></span> TradingView ✅</div>
             <div class="connection-item"><span class="dot online"></span> Exness ✅</div>
-            <div class="connection-item"><span class="dot online"></span> MT5 ✅</div>
+            <div class="connection-item"><span class="dot {{ 'online' if mt5_available else 'offline' }}"></span> MT5 {{ '✅' if mt5_available else '❌' }}</div>
             <div class="connection-item">
                 <span class="dot {{ 'online' if investing_connected else 'offline' }}"></span>
                 Investing.com {{ '✅ متصل' if investing_connected else '❌ غير متصل' }}
@@ -469,7 +559,7 @@ HTML_TEMPLATE = """
 
     <!-- Market Analysis -->
     <div class="section">
-        <h2>📊 Market Analysis</h2>
+        <h2>📊 Market Analysis <span class="badge-smc">استراتيجية SMC+ICT</span></h2>
         <div class="settings-grid">
             <div class="analysis-box">
                 <div class="label">📈 Trend</div>
@@ -585,7 +675,7 @@ HTML_TEMPLATE = """
         </table>
     </div>
 
-    <div class="footer">🚀 Smart Trading Bot V10 | 24/7 | Pending Orders + Trailing Stop | Exness Ready</div>
+    <div class="footer">🚀 Smart Trading Bot V10 | SMC+ICT+Volume Profile | 24/7 | Exness Ready</div>
 </div>
 </body>
 </html>
@@ -599,78 +689,5 @@ HTML_TEMPLATE = """
 def index():
     balance = 10000
     open_positions = [t for t in trades if t['status'] == 'OPEN']
-    pending_orders_list = [o for o in trade_manager.pending_orders if o['status'] == 'PENDING']
-    win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0, 1)
-    analysis = analyze_market_full('BTCUSDT')
-    
-    investing_connected = check_investing_connection()
-    news = fetch_news_investiny() if investing_connected else []
-    news_risk = get_news_risk() if investing_connected else 0
-    
-    return render_template_string(
-        HTML_TEMPLATE,
-        balance=f"{balance:.2f} USDT",
-        open_trades=len(open_positions),
-        pending_count=len(pending_orders_list),
-        win_rate=win_rate,
-        open_positions=open_positions,
-        pending_orders=pending_orders_list,
-        trades_history=[t for t in trades if t['status'] == 'CLOSED'][-10:],
-        last_update=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        risk_percent=bot_settings['risk_percent'],
-        stop_loss_percent=bot_settings['stop_loss_percent'],
-        take_profit_percent=bot_settings['take_profit_percent'],
-        trailing_stop_percent=bot_settings['trailing_stop_percent'],
-        confirmation=bot_settings['confirmation_candles'],
-        bot_running=bot_running,
-        analysis_trend=analysis['trend'],
-        analysis_signal=analysis['signal'],
-        analysis_confidence=round(analysis['confidence'] * 100, 1),
-        analysis_reason=analysis['reason'],
-        investing_connected=investing_connected,
-        news=news,
-        news_risk=news_risk
-    )
-
-@app.route('/toggle_bot', methods=['POST'])
-def toggle_bot():
-    global bot_running
-    bot_running = not bot_running
-    return index()
-
-@app.route('/update_risk', methods=['POST'])
-def update_risk():
-    global bot_settings
-    bot_settings['risk_percent'] = float(request.form.get('risk_percent', 2.0))
-    bot_settings['stop_loss_percent'] = float(request.form.get('stop_loss_percent', 2.0))
-    bot_settings['take_profit_percent'] = float(request.form.get('take_profit_percent', 4.0))
-    bot_settings['trailing_stop_percent'] = float(request.form.get('trailing_stop_percent', 1.5))
-    bot_settings['confirmation_candles'] = int(request.form.get('confirmation', 2))
-    return index()
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    if not bot_running:
-        return jsonify({"status": "error", "message": "Bot is stopped"}), 400
-    try:
-        data = request.get_json()
-        symbol = data.get('symbol', 'BTCUSDT')
-        action = data.get('action')
-        analysis = analyze_market_full(symbol)
-        if analysis['signal'] != action:
-            return jsonify({'status': 'blocked', 'reason': f'Signal mismatch: {analysis["signal"]} != {action}'}), 200
-        trade = execute_trade(symbol, action, analysis['entry_price'], analysis['stop_loss'], analysis['take_profit'])
-        return jsonify({'status': 'success', 'trade': trade})
-    except Exception as e:
-        logging.error(f"❌ Error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 400
-
-# =============================================
-# 9. Run Server
-# =============================================
-
-if __name__ == '__main__':
-    thread = threading.Thread(target=trading_loop, daemon=True)
-    thread.start()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=5000)
+    pending_orders_list = [o for o in legacy_manager.pending_orders if o['status'] == 'PENDING']
+    win_rate = round((winning_trades / total_trades * 100) if total_trades > 
